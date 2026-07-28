@@ -1,5 +1,5 @@
 // Orquestación server-side del cómputo de Earnings IV-Crush para UN ticker.
-// Reusado por /api/earnings (drill-down, con spreads) y /api/earnings-scan (escáner).
+// Reusado por /api/earnings (drill-down) y /api/earnings-scan (escáner).
 // Ver docs/superpowers/specs/2026-07-27-earnings-iv-crush-design.md
 
 import { fetchCompany, fetchDailyBars, fetchChainQuotes, fetchEarningsDates } from "./massive";
@@ -8,19 +8,35 @@ import {
   historicalEarningsMoves,
   earningsRichness,
   atmStraddle,
+  atmIv,
   type Richness,
 } from "./earningsMove";
-import { suggestCreditSpreads, type OptionQuote, type Spread } from "./premiumSell";
+import {
+  suggestCreditSpreads,
+  suggestSpreadsAtSigma,
+  type OptionQuote,
+  type Spread,
+} from "./premiumSell";
 import { estimateNextEarnings } from "./earnings";
+
+type SpreadPair = { putSpread: Spread | null; callSpread: Spread | null };
 
 export interface EarningsResult extends Richness {
   ticker: string;
   spot: number | null;
   method: "straddle" | "iv" | null;
+  /** IV del ATM en %, y flag de IV alta (>100%) para priorizar. */
+  ivPct: number | null;
+  ivHigh: boolean;
+  /** σ (1 desviación estándar) del vencimiento más cercano, en % y en $. */
+  sigmaPct: number | null;
+  sigmaAbs: number | null;
   straddle: { strike: number; expiration: string; dte: number } | null;
-  spreads: { putSpread: Spread | null; callSpread: Spread | null } | null;
+  /** spread estándar (delta≈0.20, fuera de 1σ). */
+  spreads: SpreadPair | null;
+  /** ventas de prima en los extremos: por delta≈0.10 y por ±2σ. */
+  spreadsExtremos: { byDelta: SpreadPair; bySigma: SpreadPair } | null;
   moves: number[];
-  /** fecha estimada del próximo earnings (proxy por cadencia de filing), o null. */
   nextEarnings: string | null;
 }
 
@@ -40,29 +56,43 @@ export async function computeEarnings(
   const chain = spot0 ? await fetchChainQuotes(clean, spot0).catch(() => null) : null;
   const s = chain?.spot ?? spot0 ?? 0;
 
+  // Move implícito: PRIORIDAD al método σ = IV_ATM·√(DTE/365) del vencimiento más cercano
+  // (robusto; evita el bug del straddle mal-priced). Fallback al straddle si no hay IV.
+  const iv = chain ? atmIv(chain.quotes, s) : null; // decimal
   const straddle = chain ? atmStraddle(chain.quotes, s) : null;
-  const implied = straddle
-    ? impliedEarningsMove({ spot: s, callPrice: straddle.callPrice, putPrice: straddle.putPrice })
-    : null;
+  const implied =
+    iv != null && chain
+      ? impliedEarningsMove({ spot: s, atmIv: iv, dteDays: chain.dte })
+      : straddle
+        ? impliedEarningsMove({ spot: s, callPrice: straddle.callPrice, putPrice: straddle.putPrice })
+        : null;
 
   const hist = historicalEarningsMoves(bars, dates);
   const richness = earningsRichness(implied?.impliedMovePct ?? null, hist);
   const nextEarnings = estimateNextEarnings(dates, new Date());
 
-  let spreads: EarningsResult["spreads"] = null;
-  if (opts.withSpreads && chain && implied && s > 0) {
+  const ivPct = iv != null ? iv * 100 : null;
+  const sigmaPct = implied?.impliedMovePct ?? null;
+  const sigmaAbs = sigmaPct != null && s > 0 ? (sigmaPct / 100) * s : null;
+
+  let spreads: SpreadPair | null = null;
+  let spreadsExtremos: EarningsResult["spreadsExtremos"] = null;
+  if (opts.withSpreads && chain && sigmaPct != null && s > 0) {
     const quotes: OptionQuote[] = chain.quotes
       .filter((q) => q.delta != null)
       .map((q) => ({ strike: q.strike, type: q.type, price: q.price, delta: q.delta!, oi: q.oi }));
+    const walls = { supports: [], resistances: [] };
     const width = Math.max(1, Math.round(s * 0.025));
-    const r = suggestCreditSpreads(
-      quotes,
-      s,
-      { supports: [], resistances: [] },
-      implied.impliedMovePct,
-      { targetDelta: 0.2, width },
-    );
-    spreads = { putSpread: r.putSpread, callSpread: r.callSpread };
+
+    const std = suggestCreditSpreads(quotes, s, walls, sigmaPct, { targetDelta: 0.2, width });
+    spreads = { putSpread: std.putSpread, callSpread: std.callSpread };
+
+    const byDelta = suggestCreditSpreads(quotes, s, walls, sigmaPct, { targetDelta: 0.1, width });
+    const bySigma = suggestSpreadsAtSigma(quotes, s, walls, sigmaPct, { sigmaMult: 2, width });
+    spreadsExtremos = {
+      byDelta: { putSpread: byDelta.putSpread, callSpread: byDelta.callSpread },
+      bySigma,
+    };
   }
 
   return {
@@ -71,11 +101,16 @@ export async function computeEarnings(
     moves: hist.moves,
     spot: s || null,
     method: implied?.method ?? null,
+    ivPct,
+    ivHigh: ivPct != null && ivPct > 100,
+    sigmaPct,
+    sigmaAbs,
     straddle:
       chain && straddle
         ? { strike: straddle.strike, expiration: chain.expiration, dte: chain.dte }
         : null,
     spreads,
+    spreadsExtremos,
     nextEarnings,
   };
 }

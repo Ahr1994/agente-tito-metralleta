@@ -110,6 +110,7 @@ export default function EarningsPage() {
                   <tr>
                     <th>Ticker</th>
                     <th>Veredicto</th>
+                    <th className="num">IV ATM</th>
                     <th className="num">Richness</th>
                     <th className="num">Implícito</th>
                     <th className="num">Histórico</th>
@@ -127,6 +128,9 @@ export default function EarningsPage() {
                         </td>
                         <td>
                           <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span>
+                        </td>
+                        <td className="num" style={{ color: r.ivHigh ? "#f04438" : undefined, fontWeight: r.ivHigh ? 700 : undefined }}>
+                          {r.ivPct != null ? `${r.ivPct.toFixed(0)}%${r.ivHigh ? " 🔥" : ""}` : "—"}
                         </td>
                         <td className="num">
                           <b>{r.richness != null ? `${r.richness.toFixed(2)}×` : "—"}</b>

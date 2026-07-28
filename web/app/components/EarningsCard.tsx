@@ -33,7 +33,15 @@ interface EarningsData {
   moves: number[];
   spot: number | null;
   method: "straddle" | "iv" | null;
+  ivPct: number | null;
+  ivHigh: boolean;
+  sigmaPct: number | null;
+  sigmaAbs: number | null;
   straddle: { strike: number; expiration: string; dte: number } | null;
+  spreadsExtremos: {
+    byDelta: { putSpread: Spread | null; callSpread: Spread | null };
+    bySigma: { putSpread: Spread | null; callSpread: Spread | null };
+  } | null;
 }
 
 const VERDICT: Record<Verdict, { label: string; sub: string; color: string }> = {
@@ -152,6 +160,28 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
           </span>
         </div>
 
+        {/* IV del ATM + σ del frente + flag de IV alta */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: "0.85em", marginTop: 6 }}>
+          {data.ivPct != null && (
+            <span>
+              IV ATM <b style={{ color: data.ivHigh ? "#f04438" : undefined }}>{data.ivPct.toFixed(0)}%</b>
+              {data.ivHigh && (
+                <span
+                  style={{ marginLeft: 6, background: "#fee4e2", color: "#f04438", borderRadius: 6, padding: "1px 6px", fontWeight: 700, fontSize: "0.85em" }}
+                >
+                  🔥 IV &gt;100%
+                </span>
+              )}
+            </span>
+          )}
+          {data.sigmaPct != null && (
+            <span className="muted">
+              σ (1σ, vto. cercano) <b>±{data.sigmaPct.toFixed(1)}%</b>
+              {data.sigmaAbs != null && ` (±$${data.sigmaAbs.toFixed(0)})`}
+            </span>
+          )}
+        </div>
+
         {/* Barras comparativas implícito vs histórico */}
         <div style={{ display: "grid", gap: 10, margin: "12px 0" }}>
           <div>
@@ -201,6 +231,40 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
             </div>
           </div>
         )}
+
+        {data.spreadsExtremos &&
+          (data.spreadsExtremos.byDelta.putSpread ||
+            data.spreadsExtremos.byDelta.callSpread ||
+            data.spreadsExtremos.bySigma.putSpread ||
+            data.spreadsExtremos.bySigma.callSpread) && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: "0.9em", marginBottom: 6 }}>
+                Ventas en los extremos <span className="muted">— más OTM, ideal con IV alta</span>
+              </div>
+              <div style={{ fontSize: "0.8em", color: "#667085", margin: "2px 0 4px" }}>
+                Delta ≈ 0.10 (≈90% OTM)
+              </div>
+              <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
+                {data.spreadsExtremos.byDelta.putSpread && (
+                  <SpreadRow s={data.spreadsExtremos.byDelta.putSpread} />
+                )}
+                {data.spreadsExtremos.byDelta.callSpread && (
+                  <SpreadRow s={data.spreadsExtremos.byDelta.callSpread} />
+                )}
+              </div>
+              <div style={{ fontSize: "0.8em", color: "#667085", margin: "2px 0 4px" }}>
+                ±2σ (las colas)
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {data.spreadsExtremos.bySigma.putSpread && (
+                  <SpreadRow s={data.spreadsExtremos.bySigma.putSpread} />
+                )}
+                {data.spreadsExtremos.bySigma.callSpread && (
+                  <SpreadRow s={data.spreadsExtremos.bySigma.callSpread} />
+                )}
+              </div>
+            </div>
+          )}
 
         <div
           className="iv-special"

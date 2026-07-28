@@ -1,5 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { suggestCreditSpreads, type OptionQuote } from "./premiumSell";
+import { suggestCreditSpreads, suggestSpreadsAtSigma, type OptionQuote } from "./premiumSell";
+
+describe("suggestSpreadsAtSigma — venta en extremos (±Nσ)", () => {
+  const q: OptionQuote[] = [
+    { strike: 80, type: "put", price: 0.5, delta: -0.05, oi: 10 },
+    { strike: 75, type: "put", price: 0.3, delta: -0.03, oi: 10 },
+    { strike: 90, type: "put", price: 1.2, delta: -0.15, oi: 10 },
+    { strike: 120, type: "call", price: 0.5, delta: 0.05, oi: 10 },
+    { strike: 125, type: "call", price: 0.3, delta: 0.03, oi: 10 },
+  ];
+  it("pone el short en ±2σ", () => {
+    // 1σ = 10% de 100 = 10 → 2σ = 20 → put target 80, call target 120
+    const r = suggestSpreadsAtSigma(q, 100, { supports: [], resistances: [] }, 10, {
+      sigmaMult: 2,
+      width: 5,
+    });
+    expect(r.putSpread?.shortStrike).toBe(80);
+    expect(r.putSpread?.longStrike).toBe(75);
+    expect(r.putSpread?.credit).toBeCloseTo(0.2, 5);
+    expect(r.callSpread?.shortStrike).toBe(120);
+    expect(r.callSpread?.longStrike).toBe(125);
+  });
+});
 
 // Cadena sintética alrededor de spot 100, con deltas y precios controlados.
 const quotes: OptionQuote[] = [

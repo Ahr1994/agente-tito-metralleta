@@ -49,9 +49,11 @@ export async function GET() {
 
         await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
-        // Ranking: primero los que tienen richness (IV rica arriba), luego el resto.
-        const rank = (r: EarningsResult) => (r.richness == null ? -1 : r.richness);
-        results.sort((a, b) => rank(b) - rank(a));
+        // Ranking: PRIORIDAD a IV alta (>100%), luego por richness (IV rica).
+        results.sort((a, b) => {
+          if (a.ivHigh !== b.ivHigh) return a.ivHigh ? -1 : 1;
+          return (b.richness ?? -1) - (a.richness ?? -1);
+        });
 
         send({ type: "done", results });
         controller.close();

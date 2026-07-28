@@ -139,6 +139,53 @@ function pickShort(
   return cands[0].strike;
 }
 
+/** Short en ±Nσ (la cola), sin importar el delta: el strike más cercano al nivel Nσ. */
+function pickShortAtSigma(
+  quotes: OptionQuote[],
+  type: "put" | "call",
+  spot: number,
+  sigma1Abs: number,
+  sigmaMult: number,
+): number | null {
+  const isPut = type === "put";
+  const target = isPut ? spot - sigmaMult * sigma1Abs : spot + sigmaMult * sigma1Abs;
+  const cands = quotes.filter(
+    (q) => q.type === type && q.price > 0 && (isPut ? q.strike < spot : q.strike > spot),
+  );
+  if (cands.length === 0) return null;
+  return cands.reduce((a, b) =>
+    Math.abs(b.strike - target) < Math.abs(a.strike - target) ? b : a,
+  ).strike;
+}
+
+/**
+ * Spreads con el short en ±Nσ (las colas), para venta de prima en los extremos.
+ * A diferencia del modo delta, aquí el strike lo fija la desviación estándar.
+ */
+export function suggestSpreadsAtSigma(
+  quotes: OptionQuote[],
+  spot: number,
+  walls: { supports: LevelLite[]; resistances: LevelLite[] },
+  expectedMove1SigmaPct: number,
+  opts: { sigmaMult?: number; width?: number } = {},
+): { putSpread: Spread | null; callSpread: Spread | null } {
+  const sigmaMult = opts.sigmaMult ?? 2;
+  const width = opts.width ?? 5;
+  const sigma1Abs = (expectedMove1SigmaPct / 100) * spot;
+
+  const putShort = pickShortAtSigma(quotes, "put", spot, sigma1Abs, sigmaMult);
+  const callShort = pickShortAtSigma(quotes, "call", spot, sigma1Abs, sigmaMult);
+
+  return {
+    putSpread:
+      putShort != null ? buildSpread("bull_put", quotes, putShort, width, walls.supports) : null,
+    callSpread:
+      callShort != null
+        ? buildSpread("bear_call", quotes, callShort, width, walls.resistances)
+        : null,
+  };
+}
+
 export function suggestCreditSpreads(
   quotes: OptionQuote[],
   spot: number,

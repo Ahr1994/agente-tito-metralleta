@@ -4,8 +4,24 @@ import {
   historicalEarningsMoves,
   earningsRichness,
   atmStraddle,
+  atmIv,
   type DailyBar,
 } from "./earningsMove";
+
+describe("atmIv", () => {
+  it("promedia la IV del strike más cercano al spot", () => {
+    const q = [
+      { strike: 100, type: "call" as const, iv: 0.5 },
+      { strike: 100, type: "put" as const, iv: 0.6 },
+      { strike: 90, type: "call" as const, iv: 0.9 },
+    ];
+    expect(atmIv(q, 101)).toBeCloseTo(0.55, 5); // strike 100 → (0.5+0.6)/2
+  });
+  it("guardarraíl: null si no hay strike dentro del ±7% del spot (bug STX)", () => {
+    const q = [{ strike: 80, type: "call" as const, iv: 0.9 }]; // 20% off del spot 100
+    expect(atmIv(q, 100)).toBeNull();
+  });
+});
 
 describe("atmStraddle", () => {
   const quotes = [

@@ -372,6 +372,8 @@ export interface ChainQuote {
   price: number;
   /** delta firmado (puts negativo); null si el plan no lo trae. */
   delta: number | null;
+  /** IV en decimal (0.68 = 68%); null si no viene. */
+  iv: number | null;
   oi: number;
 }
 
@@ -387,6 +389,7 @@ interface ChainRawContract {
   day?: { close?: number };
   last_trade?: { price?: number };
   greeks?: { delta?: number };
+  implied_volatility?: number;
   open_interest?: number;
   underlying_asset?: { price?: number };
 }
@@ -447,6 +450,7 @@ export async function fetchChainQuotes(
       type,
       price,
       delta: c.greeks?.delta ?? null,
+      iv: c.implied_volatility ?? null,
       oi: c.open_interest ?? 0,
     });
   }

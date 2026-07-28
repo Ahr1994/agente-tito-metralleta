@@ -90,6 +90,27 @@ export function atmStraddle(
   return null;
 }
 
+/**
+ * IV del ATM (decimal): el strike más cercano al spot CON IV, exigiendo que esté dentro
+ * del ±7% del spot. El guardarraíl evita el bug de tomar un strike lejano mal-priced
+ * (que inflaba el "move implícito"); si no hay ATM con IV, devuelve null → sin datos.
+ */
+export function atmIv(
+  quotes: { strike: number; type: "call" | "put"; iv?: number | null }[],
+  spot: number,
+): number | null {
+  if (!(spot > 0)) return null;
+  const near = quotes.filter(
+    (q) => q.iv != null && q.iv > 0 && Math.abs(q.strike - spot) / spot <= 0.07,
+  );
+  if (near.length === 0) return null;
+  const k = [...new Set(near.map((q) => q.strike))].sort(
+    (a, b) => Math.abs(a - spot) - Math.abs(b - spot),
+  )[0];
+  const ivs = near.filter((q) => q.strike === k).map((q) => q.iv as number);
+  return ivs.reduce((a, b) => a + b, 0) / ivs.length;
+}
+
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
   const s = [...xs].sort((a, b) => a - b);
