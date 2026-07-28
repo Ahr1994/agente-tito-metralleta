@@ -31,6 +31,8 @@ export interface EarningsResult extends Richness {
   /** σ (1 desviación estándar) del vencimiento más cercano, en % y en $. */
   sigmaPct: number | null;
   sigmaAbs: number | null;
+  /** desbalance call/put del posicionamiento OTM de la cadena (dónde está más cargado el dinero). */
+  flow: { callPct: number; putPct: number } | null;
   straddle: { strike: number; expiration: string; dte: number } | null;
   /** spread estándar (delta≈0.20, fuera de 1σ). */
   spreads: SpreadPair | null;
@@ -75,6 +77,23 @@ export async function computeEarnings(
   const sigmaPct = implied?.impliedMovePct ?? null;
   const sigmaAbs = sigmaPct != null && s > 0 ? (sigmaPct / 100) * s : null;
 
+  // Desbalance call/put: premium OTM de la cadena cercana (calls sobre spot, puts bajo spot).
+  let flow: { callPct: number; putPct: number } | null = null;
+  if (chain && s > 0) {
+    let callPrem = 0;
+    let putPrem = 0;
+    for (const q of chain.quotes) {
+      const prem = q.price * q.oi;
+      if (q.type === "call" && q.strike >= s) callPrem += prem;
+      else if (q.type === "put" && q.strike <= s) putPrem += prem;
+    }
+    const tot = callPrem + putPrem;
+    if (tot > 0) {
+      const callPct = Math.round((callPrem / tot) * 100);
+      flow = { callPct, putPct: 100 - callPct };
+    }
+  }
+
   let spreads: SpreadPair | null = null;
   let spreadsExtremos: EarningsResult["spreadsExtremos"] = null;
   if (opts.withSpreads && chain && sigmaPct != null && s > 0) {
@@ -105,6 +124,7 @@ export async function computeEarnings(
     ivHigh: ivPct != null && ivPct > 100,
     sigmaPct,
     sigmaAbs,
+    flow,
     straddle:
       chain && straddle
         ? { strike: straddle.strike, expiration: chain.expiration, dte: chain.dte }

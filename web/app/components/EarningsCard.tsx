@@ -37,6 +37,7 @@ interface EarningsData {
   ivHigh: boolean;
   sigmaPct: number | null;
   sigmaAbs: number | null;
+  flow: { callPct: number; putPct: number } | null;
   straddle: { strike: number; expiration: string; dte: number } | null;
   spreadsExtremos: {
     byDelta: { putSpread: Spread | null; callSpread: Spread | null };
@@ -180,6 +181,20 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
               {data.sigmaAbs != null && ` (±$${data.sigmaAbs.toFixed(0)})`}
             </span>
           )}
+          {data.flow && (
+            <span>
+              Flujo{" "}
+              <b style={{ color: "#12b76a" }}>{data.flow.callPct}%C</b>
+              {" / "}
+              <b style={{ color: "#f04438" }}>{data.flow.putPct}%P</b>
+              {Math.abs(data.flow.callPct - data.flow.putPct) >= 20 && (
+                <span className="muted">
+                  {" "}
+                  — cargado a {data.flow.callPct >= data.flow.putPct ? "calls 🟢" : "puts 🔴"}
+                </span>
+              )}
+            </span>
+          )}
         </div>
 
         {/* Barras comparativas implícito vs histórico */}
@@ -223,7 +238,8 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
         {data.spreads && (data.spreads.putSpread || data.spreads.callSpread) && (
           <div style={{ marginTop: 14 }}>
             <div style={{ fontWeight: 700, fontSize: "0.9em", marginBottom: 6 }}>
-              Spreads sugeridos <span className="muted">— riesgo definido · |Δ|≈0.20 · fuera de 1σ</span>
+              Credit spread — elige UN lado{" "}
+              <span className="muted">— |Δ|≈0.20 · fuera de 1σ · vende el extremo, no condor</span>
             </div>
             <div style={{ display: "grid", gap: 8 }}>
               {data.spreads.putSpread && <SpreadRow s={data.spreads.putSpread} />}

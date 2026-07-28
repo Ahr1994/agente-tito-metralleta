@@ -112,6 +112,7 @@ export default function EarningsPage() {
                     <th>Veredicto</th>
                     <th className="num">IV ATM</th>
                     <th className="num">Richness</th>
+                    <th>Flujo C/P</th>
                     <th className="num">Implícito</th>
                     <th className="num">Histórico</th>
                     <th className="num">Muestra</th>
@@ -134,6 +135,22 @@ export default function EarningsPage() {
                         </td>
                         <td className="num">
                           <b>{r.richness != null ? `${r.richness.toFixed(2)}×` : "—"}</b>
+                        </td>
+                        <td>
+                          {r.flow
+                            ? (() => {
+                                const skew = Math.abs(r.flow.callPct - r.flow.putPct);
+                                const bull = r.flow.callPct >= r.flow.putPct;
+                                return (
+                                  <span style={{ fontWeight: skew >= 20 ? 700 : 400 }}>
+                                    <span style={{ color: "#12b76a" }}>{r.flow.callPct}%C</span>
+                                    {" / "}
+                                    <span style={{ color: "#f04438" }}>{r.flow.putPct}%P</span>
+                                    {skew >= 20 && (bull ? " 🟢" : " 🔴")}
+                                  </span>
+                                );
+                              })()
+                            : "—"}
                         </td>
                         <td className="num">
                           {r.impliedMovePct != null ? `±${r.impliedMovePct.toFixed(1)}%` : "—"}
