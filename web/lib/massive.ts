@@ -157,16 +157,17 @@ export async function fetchCompany(ticker: string): Promise<CompanyInfo> {
   const exchangeCode = d.primary_exchange;
 
   // Precio del subyacente. El snapshot en vivo (`/v2/snapshot/...`) requiere el plan
-  // de Stocks; si no está disponible (403 → snap null), caemos al cierre previo, que
-  // sí entra en el plan gratis. Así la app funciona con o sin el plan de Stocks.
-  let price = t.day?.c ?? t.min?.c ?? t.prevDay?.c ?? null;
+  // de Stocks; si no está disponible (403 → snap null) O con el mercado cerrado devuelve
+  // `day.c = 0`, caemos al cierre previo (plan gratis). Usamos `||` a propósito: un 0 no
+  // es un precio, así que debe saltar al siguiente candidato (evita el bug del $0.00).
+  let price = t.day?.c || t.min?.c || t.prevDay?.c || null;
   let dayOpen = t.day?.o ?? null;
   let dayHigh = t.day?.h ?? null;
   let dayLow = t.day?.l ?? null;
   let dayVolume = t.day?.v ?? null;
   let prevClose = t.prevDay?.c ?? null;
 
-  if (price == null) {
+  if (!price) {
     const prev = await getJson<{ results?: AggBar[] }>(
       `/v2/aggs/ticker/${encodeURIComponent(clean)}/prev?adjusted=true`,
     ).catch(() => null);
