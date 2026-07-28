@@ -364,46 +364,57 @@ export async function fetchWheelChain(
   return { spot, quotes: otm };
 }
 
-export interface AtmStraddle {
+export interface ChainQuote {
   strike: number;
+  type: "call" | "put";
+  /** cierre del día o último trade, por acción. */
+  price: number;
+  /** delta firmado (puts negativo); null si el plan no lo trae. */
+  delta: number | null;
+  oi: number;
+}
+
+export interface ChainQuotesResult {
+  quotes: ChainQuote[];
   expiration: string;
   dte: number;
-  callPrice: number | null;
-  putPrice: number | null;
   spot: number | null;
 }
 
-interface StraddleRawContract {
+interface ChainRawContract {
   details?: { strike_price?: number; expiration_date?: string; contract_type?: string };
   day?: { close?: number };
   last_trade?: { price?: number };
+  greeks?: { delta?: number };
+  open_interest?: number;
   underlying_asset?: { price?: number };
 }
 
 /**
- * Straddle ATM del vencimiento más cercano (≥2 días, para evitar 0DTE). Sirve de proxy
- * del "move implícito" del próximo evento (call+put)/spot. Usa cierre del día o último
- * trade. Ver lib/earningsMove.ts.
+ * Cadena near-money del vencimiento más cercano (≥2 días, para evitar 0DTE), con delta.
+ * Una sola llamada que alimenta tanto el straddle ATM (move implícito) como el sugeridor
+ * de spreads. Ver lib/earningsMove.ts y lib/premiumSell.ts.
  */
-export async function fetchAtmStraddle(
+export async function fetchChainQuotes(
   ticker: string,
   spot: number | null,
-): Promise<AtmStraddle | null> {
+): Promise<ChainQuotesResult | null> {
   const clean = ticker.trim().toUpperCase();
   if (!clean) return null;
   const day = 24 * 60 * 60 * 1000;
   const todayETMs = Date.parse(`${marketDateStr(new Date())}T00:00:00Z`);
   const from = toDateStr(todayETMs + 2 * day);
   const to = toDateStr(todayETMs + 45 * day);
+  // Rango amplio: los spreads necesitan alas bien OTM (fuera del 1σ de earnings).
   const strikeFilter =
     spot && spot > 0
-      ? `&strike_price.gte=${Math.floor(spot * 0.85)}&strike_price.lte=${Math.ceil(spot * 1.15)}`
+      ? `&strike_price.gte=${Math.floor(spot * 0.6)}&strike_price.lte=${Math.ceil(spot * 1.4)}`
       : "";
   const path =
     `/v3/snapshot/options/${encodeURIComponent(clean)}` +
     `?expiration_date.gte=${from}&expiration_date.lte=${to}${strikeFilter}&limit=250`;
 
-  const json = await getJson<{ results?: StraddleRawContract[] }>(path).catch(() => null);
+  const json = await getJson<{ results?: ChainRawContract[] }>(path).catch(() => null);
   const results = json?.results ?? [];
   if (results.length === 0) return null;
 
@@ -418,32 +429,29 @@ export async function fetchAtmStraddle(
     spot && spot > 0
       ? spot
       : atExp.find((c) => c.underlying_asset?.price)?.underlying_asset?.price ?? null;
-  if (!s) return null;
 
-  const price = (c?: StraddleRawContract) =>
-    c ? c.day?.close ?? c.last_trade?.price ?? null : null;
-
-  const strikes = [
-    ...new Set(
-      atExp.map((c) => c.details?.strike_price).filter((x): x is number => x != null),
-    ),
-  ].sort((a, b) => Math.abs(a - s) - Math.abs(b - s));
-
-  for (const k of strikes) {
-    const call = atExp.find(
-      (c) => c.details?.strike_price === k && c.details?.contract_type === "call",
-    );
-    const put = atExp.find(
-      (c) => c.details?.strike_price === k && c.details?.contract_type === "put",
-    );
-    const cp = price(call);
-    const pp = price(put);
-    if (cp && pp) {
-      const dte = Math.round((Date.parse(`${target}T00:00:00Z`) - todayETMs) / day);
-      return { strike: k, expiration: target, dte, callPrice: cp, putPrice: pp, spot: s };
-    }
+  const quotes: ChainQuote[] = [];
+  for (const c of atExp) {
+    const strike = c.details?.strike_price;
+    const type = c.details?.contract_type;
+    const price = c.day?.close ?? c.last_trade?.price ?? 0;
+    if (
+      !(strike != null && strike > 0) ||
+      (type !== "call" && type !== "put") ||
+      price <= 0
+    )
+      continue;
+    quotes.push({
+      strike,
+      type,
+      price,
+      delta: c.greeks?.delta ?? null,
+      oi: c.open_interest ?? 0,
+    });
   }
-  return null;
+
+  const dte = Math.round((Date.parse(`${target}T00:00:00Z`) - todayETMs) / day);
+  return { quotes, expiration: target, dte, spot: s };
 }
 
 /**

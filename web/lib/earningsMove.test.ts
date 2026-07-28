@@ -3,8 +3,31 @@ import {
   impliedEarningsMove,
   historicalEarningsMoves,
   earningsRichness,
+  atmStraddle,
   type DailyBar,
 } from "./earningsMove";
+
+describe("atmStraddle", () => {
+  const quotes = [
+    { strike: 95, type: "call" as const, price: 6 },
+    { strike: 95, type: "put" as const, price: 1 },
+    { strike: 100, type: "call" as const, price: 3 },
+    { strike: 100, type: "put" as const, price: 3 },
+    { strike: 105, type: "call" as const, price: 1 },
+    { strike: 105, type: "put" as const, price: 6 },
+  ];
+  it("elige el strike más cercano al spot con call y put", () => {
+    const r = atmStraddle(quotes, 101);
+    expect(r).not.toBeNull();
+    expect(r!.strike).toBe(100);
+    expect(r!.callPrice).toBe(3);
+    expect(r!.putPrice).toBe(3);
+  });
+  it("salta strikes sin ambas patas con precio", () => {
+    const r = atmStraddle([{ strike: 100, type: "call", price: 3 }], 100);
+    expect(r).toBeNull();
+  });
+});
 
 describe("impliedEarningsMove", () => {
   it("usa el straddle cuando hay precios de call y put", () => {

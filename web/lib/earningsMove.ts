@@ -64,6 +64,32 @@ export function impliedEarningsMove(
   return null;
 }
 
+export interface QuoteLite {
+  strike: number;
+  type: "call" | "put";
+  price: number;
+}
+
+/**
+ * Straddle ATM: el strike más cercano al spot que tenga call Y put con precio, y sus
+ * precios. Puro para poder derivar el move implícito desde una cadena ya obtenida.
+ */
+export function atmStraddle(
+  quotes: QuoteLite[],
+  spot: number,
+): { strike: number; callPrice: number; putPrice: number } | null {
+  if (!(spot > 0)) return null;
+  const strikes = [...new Set(quotes.map((q) => q.strike))].sort(
+    (a, b) => Math.abs(a - spot) - Math.abs(b - spot),
+  );
+  for (const k of strikes) {
+    const c = quotes.find((q) => q.strike === k && q.type === "call" && q.price > 0);
+    const p = quotes.find((q) => q.strike === k && q.type === "put" && q.price > 0);
+    if (c && p) return { strike: k, callPrice: c.price, putPrice: p.price };
+  }
+  return null;
+}
+
 function median(xs: number[]): number {
   if (xs.length === 0) return 0;
   const s = [...xs].sort((a, b) => a - b);
