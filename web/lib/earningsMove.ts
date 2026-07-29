@@ -108,7 +108,10 @@ export function atmIv(
     (a, b) => Math.abs(a - spot) - Math.abs(b - spot),
   )[0];
   const ivs = near.filter((q) => q.strike === k).map((q) => q.iv as number);
-  return ivs.reduce((a, b) => a + b, 0) / ivs.length;
+  // Por put-call parity, call IV ≈ put IV en el ATM. Si divergen mucho, un lado está
+  // corrupto (data stale/mal-solveada, ej. un put con IV 480%). Usamos el MÍNIMO para
+  // no dejar que el lado inflado arrastre el resultado.
+  return Math.min(...ivs);
 }
 
 function median(xs: number[]): number {

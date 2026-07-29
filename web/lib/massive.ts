@@ -375,6 +375,8 @@ export interface ChainQuote {
   /** IV en decimal (0.68 = 68%); null si no viene. */
   iv: number | null;
   oi: number;
+  /** ms de la última actualización del contrato (para detectar data stale). */
+  lastUpdatedMs: number | null;
 }
 
 export interface ChainQuotesResult {
@@ -386,7 +388,7 @@ export interface ChainQuotesResult {
 
 interface ChainRawContract {
   details?: { strike_price?: number; expiration_date?: string; contract_type?: string };
-  day?: { close?: number };
+  day?: { close?: number; last_updated?: number };
   last_trade?: { price?: number };
   greeks?: { delta?: number };
   implied_volatility?: number;
@@ -452,6 +454,8 @@ export async function fetchChainQuotes(
       delta: c.greeks?.delta ?? null,
       iv: c.implied_volatility ?? null,
       oi: c.open_interest ?? 0,
+      // Massive entrega el timestamp en nanosegundos → a ms.
+      lastUpdatedMs: c.day?.last_updated ? Math.round(c.day.last_updated / 1e6) : null,
     });
   }
 

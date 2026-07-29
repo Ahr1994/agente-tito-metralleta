@@ -18,6 +18,7 @@ import {
   type Spread,
 } from "./premiumSell";
 import { estimateNextEarnings } from "./earnings";
+import { marketDateStr } from "./occ";
 
 type SpreadPair = { putSpread: Spread | null; callSpread: Spread | null };
 
@@ -33,6 +34,8 @@ export interface EarningsResult extends Richness {
   sigmaAbs: number | null;
   /** desbalance call/put del posicionamiento OTM de la cadena (dónde está más cargado el dinero). */
   flow: { callPct: number; putPct: number } | null;
+  /** true si la data de opciones del ATM es de una sesión anterior (no operó hoy) → no fiable. */
+  stale: boolean;
   straddle: { strike: number; expiration: string; dte: number } | null;
   /** spread estándar (delta≈0.20, fuera de 1σ). */
   spreads: SpreadPair | null;
@@ -94,6 +97,18 @@ export async function computeEarnings(
     }
   }
 
+  // Data stale: si el contrato ATM se actualizó por última vez en una sesión ANTERIOR
+  // (no operó hoy), la IV/precio son viejos (ej. pre-earnings tras reportar) → no fiable.
+  let stale = false;
+  if (chain && s > 0) {
+    const atm = chain.quotes
+      .filter((q) => q.lastUpdatedMs != null && Math.abs(q.strike - s) / s <= 0.03)
+      .sort((a, b) => Math.abs(a.strike - s) - Math.abs(b.strike - s))[0];
+    if (atm?.lastUpdatedMs != null) {
+      stale = marketDateStr(new Date(atm.lastUpdatedMs)) < marketDateStr(new Date());
+    }
+  }
+
   let spreads: SpreadPair | null = null;
   let spreadsExtremos: EarningsResult["spreadsExtremos"] = null;
   if (opts.withSpreads && chain && sigmaPct != null && s > 0) {
@@ -125,6 +140,7 @@ export async function computeEarnings(
     sigmaPct,
     sigmaAbs,
     flow,
+    stale,
     straddle:
       chain && straddle
         ? { strike: straddle.strike, expiration: chain.expiration, dte: chain.dte }

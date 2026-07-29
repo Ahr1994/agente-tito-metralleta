@@ -126,6 +126,11 @@ export default function EarningsPage() {
                       <tr key={r.ticker}>
                         <td>
                           <b>{r.ticker}</b>
+                          {r.stale && (
+                            <span title="data de opciones sin actualizar — no fiable" style={{ color: "#b42318" }}>
+                              {" "}⚠
+                            </span>
+                          )}
                         </td>
                         <td>
                           <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span>

@@ -38,6 +38,7 @@ interface EarningsData {
   sigmaPct: number | null;
   sigmaAbs: number | null;
   flow: { callPct: number; putPct: number } | null;
+  stale: boolean;
   straddle: { strike: number; expiration: string; dte: number } | null;
   spreadsExtremos: {
     byDelta: { putSpread: Spread | null; callSpread: Spread | null };
@@ -148,6 +149,24 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
       </div>
 
       <div className="score-detail">
+        {data.stale && (
+          <div
+            style={{
+              background: "#fef3f2",
+              color: "#b42318",
+              border: "1px solid #fecdca",
+              borderRadius: 8,
+              padding: "8px 10px",
+              marginBottom: 10,
+              fontSize: "0.85em",
+              fontWeight: 600,
+            }}
+          >
+            ⚠ Data de opciones SIN ACTUALIZAR (de una sesión anterior). Si la acción ya
+            reportó o el mercado recién abrió, la IV y el veredicto de abajo <b>NO son
+            fiables</b> — espera a que las opciones operen hoy.
+          </div>
+        )}
         <div
           className="score-verdict"
           style={{ color: v.color, display: "flex", alignItems: "baseline", gap: 8 }}
