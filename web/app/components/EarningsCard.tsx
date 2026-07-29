@@ -32,6 +32,7 @@ interface EarningsData {
   verdict: Verdict;
   moves: number[];
   spot: number | null;
+  nextEarnings: string | null;
   method: "straddle" | "iv" | null;
   ivPct: number | null;
   ivHigh: boolean;
@@ -53,7 +54,7 @@ const VERDICT: Record<Verdict, { label: string; sub: string; color: string }> = 
   sin_datos: { label: "Sin datos", sub: "histórico insuficiente (<4 earnings)", color: "#98a2b3" },
 };
 
-function SpreadRow({ s }: { s: Spread }) {
+function SpreadRow({ s, onSave, saved }: { s: Spread; onSave?: (s: Spread) => void; saved?: boolean }) {
   const isPut = s.kind === "bull_put";
   return (
     <div
@@ -64,11 +65,29 @@ function SpreadRow({ s }: { s: Spread }) {
         fontSize: "0.85em",
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, gap: 8 }}>
         <b>{isPut ? "🔻 Vender PUT spread" : "🔺 Vender CALL spread"}</b>
         <span className="muted">
           ${s.shortStrike} / ${s.longStrike} · ancho ${s.width}
         </span>
+        {onSave && (
+          <button
+            onClick={() => onSave(s)}
+            disabled={saved}
+            style={{
+              marginLeft: "auto",
+              border: "1px solid #d0d5dd",
+              borderRadius: 6,
+              background: saved ? "#ecfdf3" : "#fff",
+              color: saved ? "#12b76a" : "#344054",
+              cursor: saved ? "default" : "pointer",
+              fontSize: "0.9em",
+              padding: "1px 8px",
+            }}
+          >
+            {saved ? "✓ Guardado" : "⭐ Guardar"}
+          </button>
+        )}
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px" }}>
         <span>
@@ -91,15 +110,30 @@ function SpreadRow({ s }: { s: Spread }) {
   );
 }
 
+interface TradeLite {
+  id: string;
+  savedAt: string;
+  kind: "bull_put" | "bear_call";
+  shortStrike: number;
+  longStrike: number;
+  credit: number;
+  spotAtEntry: number | null;
+  ivAtEntry: number | null;
+  richnessAtEntry: number | null;
+}
+
 export default function EarningsCard({ ticker }: { ticker: string }) {
   const [data, setData] = useState<EarningsData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [trades, setTrades] = useState<TradeLite[]>([]);
+  const [savedKeys, setSavedKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!ticker) return;
     let alive = true;
     setLoading(true);
     setData(null);
+    setSavedKeys({});
     fetch(`/api/earnings?ticker=${encodeURIComponent(ticker)}`)
       .then((r) => r.json())
       .then((d) => {
@@ -107,10 +141,46 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
       })
       .catch(() => {})
       .finally(() => alive && setLoading(false));
+    fetch(`/api/earnings-trades?ticker=${encodeURIComponent(ticker)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (alive) setTrades(d.trades ?? []);
+      })
+      .catch(() => {});
     return () => {
       alive = false;
     };
   }, [ticker]);
+
+  const spreadKey = (s: Spread) => `${s.kind}-${s.shortStrike}-${s.longStrike}`;
+
+  const saveTrade = (s: Spread) => {
+    if (!data) return;
+    fetch("/api/earnings-trades", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ticker,
+        kind: s.kind,
+        shortStrike: s.shortStrike,
+        longStrike: s.longStrike,
+        width: s.width,
+        credit: s.credit,
+        expiration: data.straddle?.expiration ?? null,
+        earningsDate: data.nextEarnings ?? null,
+        spotAtEntry: data.spot,
+        ivAtEntry: data.ivPct,
+        richnessAtEntry: data.richness,
+        flowAtEntry: data.flow,
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.trades) setTrades(d.trades);
+        setSavedKeys((k) => ({ ...k, [spreadKey(s)]: true }));
+      })
+      .catch(() => {});
+  };
 
   if (loading) {
     return (
@@ -216,6 +286,35 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
           )}
         </div>
 
+        {trades.length > 0 && (
+          <div
+            style={{
+              marginTop: 10,
+              background: "#f8f9fc",
+              border: "1px solid #eaecf0",
+              borderRadius: 8,
+              padding: "8px 10px",
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: "0.85em", marginBottom: 4 }}>
+              📌 Tus trades anteriores en {ticker} ({trades.length}) —{" "}
+              <span className="muted">referencia para este earnings</span>
+            </div>
+            <div style={{ display: "grid", gap: 3, fontSize: "0.8em" }}>
+              {trades.slice(0, 5).map((t) => (
+                <div key={t.id} className="muted">
+                  {new Date(t.savedAt).toLocaleDateString()} ·{" "}
+                  <b>{t.kind === "bull_put" ? "PUT" : "CALL"} ${t.shortStrike}/${t.longStrike}</b> ·
+                  crédito ${Math.round(t.credit * 100)}
+                  {t.spotAtEntry != null && ` · spot $${t.spotAtEntry.toFixed(0)}`}
+                  {t.ivAtEntry != null && ` · IV ${t.ivAtEntry.toFixed(0)}%`}
+                  {t.richnessAtEntry != null && ` · rich ${t.richnessAtEntry.toFixed(2)}×`}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Barras comparativas implícito vs histórico */}
         <div style={{ display: "grid", gap: 10, margin: "12px 0" }}>
           <div>
@@ -261,8 +360,20 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
               <span className="muted">— |Δ|≈0.20 · fuera de 1σ · vende el extremo, no condor</span>
             </div>
             <div style={{ display: "grid", gap: 8 }}>
-              {data.spreads.putSpread && <SpreadRow s={data.spreads.putSpread} />}
-              {data.spreads.callSpread && <SpreadRow s={data.spreads.callSpread} />}
+              {data.spreads.putSpread && (
+                <SpreadRow
+                  s={data.spreads.putSpread}
+                  onSave={saveTrade}
+                  saved={savedKeys[spreadKey(data.spreads.putSpread)]}
+                />
+              )}
+              {data.spreads.callSpread && (
+                <SpreadRow
+                  s={data.spreads.callSpread}
+                  onSave={saveTrade}
+                  saved={savedKeys[spreadKey(data.spreads.callSpread)]}
+                />
+              )}
             </div>
           </div>
         )}
@@ -281,10 +392,18 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
               </div>
               <div style={{ display: "grid", gap: 8, marginBottom: 8 }}>
                 {data.spreadsExtremos.byDelta.putSpread && (
-                  <SpreadRow s={data.spreadsExtremos.byDelta.putSpread} />
+                  <SpreadRow
+                    s={data.spreadsExtremos.byDelta.putSpread}
+                    onSave={saveTrade}
+                    saved={savedKeys[spreadKey(data.spreadsExtremos.byDelta.putSpread)]}
+                  />
                 )}
                 {data.spreadsExtremos.byDelta.callSpread && (
-                  <SpreadRow s={data.spreadsExtremos.byDelta.callSpread} />
+                  <SpreadRow
+                    s={data.spreadsExtremos.byDelta.callSpread}
+                    onSave={saveTrade}
+                    saved={savedKeys[spreadKey(data.spreadsExtremos.byDelta.callSpread)]}
+                  />
                 )}
               </div>
               <div style={{ fontSize: "0.8em", color: "#667085", margin: "2px 0 4px" }}>
@@ -292,10 +411,18 @@ export default function EarningsCard({ ticker }: { ticker: string }) {
               </div>
               <div style={{ display: "grid", gap: 8 }}>
                 {data.spreadsExtremos.bySigma.putSpread && (
-                  <SpreadRow s={data.spreadsExtremos.bySigma.putSpread} />
+                  <SpreadRow
+                    s={data.spreadsExtremos.bySigma.putSpread}
+                    onSave={saveTrade}
+                    saved={savedKeys[spreadKey(data.spreadsExtremos.bySigma.putSpread)]}
+                  />
                 )}
                 {data.spreadsExtremos.bySigma.callSpread && (
-                  <SpreadRow s={data.spreadsExtremos.bySigma.callSpread} />
+                  <SpreadRow
+                    s={data.spreadsExtremos.bySigma.callSpread}
+                    onSave={saveTrade}
+                    saved={savedKeys[spreadKey(data.spreadsExtremos.bySigma.callSpread)]}
+                  />
                 )}
               </div>
             </div>
