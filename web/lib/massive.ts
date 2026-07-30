@@ -1,6 +1,7 @@
 // Cliente de Massive (massive.com — antes Polygon.io). Solo se usa en el servidor.
 
 import type { CompanyInfo, DailyBar, RawContract, TfBar } from "./types";
+import type { SpxQuote } from "./spx";
 import { marketDateStr } from "./occ";
 
 const BASE_URL = "https://api.massive.com";
@@ -477,6 +478,75 @@ export async function fetchEarningsDates(ticker: string): Promise<string[]> {
     .map((r) => r.filing_date)
     .filter((d): d is string => Boolean(d));
   return [...new Set(dates)].sort();
+}
+
+interface SpxRawContract {
+  details?: { strike_price?: number; expiration_date?: string; contract_type?: string };
+  day?: { close?: number };
+  last_trade?: { price?: number };
+  greeks?: { delta?: number; gamma?: number };
+  implied_volatility?: number;
+  open_interest?: number;
+}
+
+/**
+ * Cadena SPX de los vencimientos cercanos (cubre 0DTE + 1DTE) con greeks/IV/OI. Usa el
+ * underlying `I:SPX` (el que devuelve greeks). Como el índice da 403, centra el rango de
+ * strikes con **SPY×10** (SPY sí está en el plan). El spot exacto se deriva luego por
+ * paridad en lib/spx.ts. Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
+ */
+export async function fetchSpxChain(): Promise<{ quotes: SpxQuote[]; expirations: string[] }> {
+  const key = apiKey();
+  const day = 24 * 60 * 60 * 1000;
+  const todayET = marketDateStr(new Date());
+  const todayETMs = Date.parse(`${todayET}T00:00:00Z`);
+  const to = toDateStr(todayETMs + 6 * day); // 0DTE + 1DTE con margen (fin de semana)
+
+  // Centrar el rango de strikes: SPY×10 ≈ SPX (el índice no está autorizado).
+  const spy = await fetchCompany("SPY").catch(() => null);
+  const est = spy?.price && spy.price > 0 ? spy.price * 10 : 7000;
+  const lo = Math.floor((est * 0.94) / 5) * 5;
+  const hi = Math.ceil((est * 1.06) / 5) * 5;
+
+  let url: string | null =
+    `${BASE_URL}/v3/snapshot/options/I:SPX` +
+    `?expiration_date.gte=${todayET}&expiration_date.lte=${to}` +
+    `&strike_price.gte=${lo}&strike_price.lte=${hi}&limit=250`;
+
+  const quotes: SpxQuote[] = [];
+  let pages = 0;
+  while (url && pages < 5) {
+    pages += 1;
+    const res: Response = await fetch(url, {
+      headers: { Authorization: `Bearer ${key}` },
+      cache: "no-store",
+    });
+    if (!res.ok) break;
+    const json: { results?: SpxRawContract[]; next_url?: string } = await res.json();
+    for (const c of json.results ?? []) {
+      const strike = c.details?.strike_price;
+      const type = c.details?.contract_type;
+      const expiration = c.details?.expiration_date;
+      const price = c.day?.close ?? c.last_trade?.price ?? 0;
+      if (!(strike != null && strike > 0) || (type !== "call" && type !== "put") || !expiration)
+        continue;
+      quotes.push({
+        strike,
+        type,
+        expiration,
+        price,
+        delta: c.greeks?.delta ?? null,
+        gamma: c.greeks?.gamma ?? null,
+        iv: c.implied_volatility ?? null,
+        oi: c.open_interest ?? 0,
+      });
+    }
+    // next_url se sigue con el mismo header de autorización.
+    url = json.next_url ?? null;
+  }
+
+  const expirations = [...new Set(quotes.map((q) => q.expiration))].sort();
+  return { quotes, expirations };
 }
 
 function describeStatus(status: number, ticker: string, body: string): string {
