@@ -2,9 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import NavTabs from "@/app/components/NavTabs";
-import type { SpxAnalysis, SpxDteSetup } from "@/lib/spxServer";
+import type { SpxAnalysis, SpxDteSetup, SpxReviewResult } from "@/lib/spxServer";
 import type { SpxExtreme } from "@/lib/spx";
 import type { SpxTrade } from "@/lib/spxTradeStore";
+import type { SpxOutcome } from "@/lib/spxReview";
+
+const OUTCOME: Record<SpxOutcome, { label: string; color: string }> = {
+  win: { label: "✅ OTM (ganó)", color: "#12b76a" },
+  loss: { label: "❌ máx pérdida", color: "#f04438" },
+  partial: { label: "◑ parcial", color: "#d9a406" },
+  pending: { label: "⏳ abierto", color: "#98a2b3" },
+};
 
 function evBadge(margin: number): { label: string; color: string } {
   if (margin >= 3) return { label: `EV +${margin} ✅`, color: "#12b76a" };
@@ -154,7 +162,7 @@ export default function SpxPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dte, setDte] = useState<0 | 1>(0);
-  const [trades, setTrades] = useState<SpxTrade[]>([]);
+  const [review, setReview] = useState<SpxReviewResult | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -179,11 +187,11 @@ export default function SpxPage() {
     }
   }, [mode, cMin, cMax]);
 
-  const loadTrades = useCallback(async () => {
+  const loadReview = useCallback(async () => {
     try {
-      const res = await fetch("/api/spx-trades", { cache: "no-store" });
+      const res = await fetch("/api/spx-review", { cache: "no-store" });
       const json = await res.json();
-      setTrades(json.trades ?? []);
+      if (res.ok) setReview(json as SpxReviewResult);
     } catch {
       /* ignora */
     }
@@ -191,8 +199,8 @@ export default function SpxPage() {
 
   useEffect(() => {
     load();
-    loadTrades();
-  }, [load, loadTrades]);
+    loadReview();
+  }, [load, loadReview]);
 
   const save = useCallback(
     async (t: Partial<SpxTrade>) => {
@@ -202,9 +210,8 @@ export default function SpxPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(t),
         });
-        const json = await res.json();
         if (res.ok) {
-          setTrades(json.trades ?? []);
+          void loadReview();
           setFlash(`Guardado: ${t.kind} ${t.shortStrike}/${t.longStrike}`);
           setTimeout(() => setFlash(null), 2500);
         }
@@ -212,7 +219,7 @@ export default function SpxPage() {
         /* ignora */
       }
     },
-    [],
+    [loadReview],
   );
 
   const active = data ? (dte === 0 ? data.zero : data.one) : null;
@@ -365,9 +372,46 @@ export default function SpxPage() {
           </section>
         )}
 
-        {trades.length > 0 && (
+        {review && review.record.closed > 0 && (
           <section className="scorecard" style={{ marginTop: 14 }}>
-            <b>📌 Tus spreads SPX guardados</b>
+            <b>🏆 Tu track record real ({review.record.closed} cerrados)</b>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 22, marginTop: 10 }}>
+              <div>
+                <div className="muted" style={{ fontSize: "0.8em" }}>Win-rate (expiró OTM)</div>
+                <b style={{ fontSize: "1.3em" }}>
+                  {review.record.winRate?.toFixed(0)}% <span className="muted" style={{ fontSize: "0.6em" }}>({review.record.wins}/{review.record.closed})</span>
+                </b>
+              </div>
+              <div>
+                <div className="muted" style={{ fontSize: "0.8em" }}>P&L realizado</div>
+                <b style={{ fontSize: "1.3em", color: review.record.totalPnL >= 0 ? "#12b76a" : "#f04438" }}>
+                  {review.record.totalPnL >= 0 ? "+" : ""}${review.record.totalPnL}
+                </b>
+              </div>
+              <div>
+                <div className="muted" style={{ fontSize: "0.8em" }}>EV real / trade</div>
+                <b style={{ fontSize: "1.3em", color: (review.record.realizedEvPerTrade ?? 0) >= 0 ? "#12b76a" : "#f04438" }}>
+                  {(review.record.realizedEvPerTrade ?? 0) >= 0 ? "+" : ""}${review.record.realizedEvPerTrade}
+                </b>
+              </div>
+              {review.record.edgeVsProb != null && (
+                <div>
+                  <div className="muted" style={{ fontSize: "0.8em" }}>Edge vs ProbOTM</div>
+                  <b style={{ fontSize: "1.3em", color: review.record.edgeVsProb >= 0 ? "#12b76a" : "#f04438" }}>
+                    {review.record.edgeVsProb >= 0 ? "+" : ""}{review.record.edgeVsProb} pts
+                  </b>
+                  <div className="muted" style={{ fontSize: "0.72em" }}>
+                    ganas {review.record.winRate?.toFixed(0)}% vs {review.record.avgProbOTM}% prometido
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {review && review.reviews.length > 0 && (
+          <section className="scorecard" style={{ marginTop: 14 }}>
+            <b>📌 Tus spreads SPX {review.record.pending > 0 && <span className="muted">({review.record.pending} abiertos)</span>}</b>
             <div className="table-wrap" style={{ marginTop: 8 }}>
               <table>
                 <thead>
@@ -377,29 +421,36 @@ export default function SpxPage() {
                     <th>Spread</th>
                     <th className="num">Crédito</th>
                     <th className="num">ProbOTM</th>
-                    <th className="num">EV</th>
-                    <th className="num">Spot</th>
-                    <th>Flujo</th>
+                    <th>Resultado</th>
+                    <th className="num">P&L</th>
+                    <th className="num">Settle</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {trades.map((t) => (
-                    <tr key={t.id}>
-                      <td className="muted">{new Date(t.savedAt).toLocaleDateString()}</td>
-                      <td>{t.dte}DTE</td>
-                      <td>
-                        <b>{t.kind === "bull_put" ? "PUT" : "CALL"}</b> {t.shortStrike}/{t.longStrike}
-                      </td>
-                      <td className="num">${(t.credit * 100).toFixed(0)}</td>
-                      <td className="num">{t.probOTM ?? "—"}%</td>
-                      <td className="num">{t.evMargin != null ? (t.evMargin > 0 ? `+${t.evMargin}` : t.evMargin) : "—"}</td>
-                      <td className="num muted">{t.spotAtEntry?.toFixed(0) ?? "—"}</td>
-                      <td className="muted">{t.flowLeanAtEntry ?? "—"}</td>
-                    </tr>
-                  ))}
+                  {review.reviews.map((r) => {
+                    const t = r.trade;
+                    const o = OUTCOME[r.outcome];
+                    return (
+                      <tr key={t.id}>
+                        <td className="muted">{new Date(t.savedAt).toLocaleDateString()}</td>
+                        <td>{t.dte}DTE</td>
+                        <td>
+                          <b>{t.kind === "bull_put" ? "PUT" : "CALL"}</b> {t.shortStrike}/{t.longStrike}
+                        </td>
+                        <td className="num">${(t.credit * 100).toFixed(0)}</td>
+                        <td className="num">{t.probOTM ?? "—"}%</td>
+                        <td style={{ color: o.color, fontWeight: 600 }}>{o.label}</td>
+                        <td className="num" style={{ color: r.realizedPnL == null ? undefined : r.realizedPnL >= 0 ? "#12b76a" : "#f04438", fontWeight: 700 }}>
+                          {r.realizedPnL == null ? "—" : `${r.realizedPnL >= 0 ? "+" : ""}$${r.realizedPnL}`}
+                        </td>
+                        <td className="num muted">{r.settlement?.toFixed(0) ?? "—"}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
+            <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{review.settlementNote}</div>
           </section>
         )}
 

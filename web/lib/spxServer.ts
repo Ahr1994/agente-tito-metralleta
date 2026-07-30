@@ -2,8 +2,11 @@
 // + noticias macro para las dos expiraciones. Solo servidor.
 // Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
 
-import { fetchSpxChain } from "./massive";
+import { fetchSpxChain, fetchDailyBars } from "./massive";
 import { fetchSpxFlow } from "./marketsnack";
+import { marketDateStr } from "./occ";
+import { loadSpxTrades } from "./spxTradeStore";
+import { reviewSpxTrade, summarizeSpxTrades, type SpxTradeReview, type SpxTrackRecord } from "./spxReview";
 import {
   deriveSpxSpot,
   splitByDte,
@@ -84,5 +87,35 @@ export async function computeSpx(
     news: news.slice(0, 6),
     flowError,
     generatedAt: now.toISOString(),
+  };
+}
+
+export interface SpxReviewResult {
+  reviews: SpxTradeReview[]; // más reciente primero
+  record: SpxTrackRecord;
+  settlementNote: string;
+}
+
+/**
+ * Track record real: evalúa cada spread guardado contra el settlement (SPX derivado del cierre
+ * = SPY×10, el índice da 403). Solo evalúa los ya vencidos (expiración < hoy); el resto queda
+ * pending. Devuelve los reviews + el resumen (win-rate, EV realizado, edge vs ProbOTM).
+ */
+export async function reviewSpxTrades(now: Date = new Date()): Promise<SpxReviewResult> {
+  const trades = await loadSpxTrades();
+  const today = marketDateStr(now);
+  const bars = await fetchDailyBars("SPY", 120).catch(() => []);
+  const closeByDate = new Map(bars.map((b) => [b.time, b.close * 10])); // SPY×10 ≈ SPX
+
+  const reviews = trades.map((t) => {
+    const settled =
+      t.expiration && t.expiration < today ? (closeByDate.get(t.expiration) ?? null) : null;
+    return reviewSpxTrade(t, settled);
+  });
+
+  return {
+    reviews,
+    record: summarizeSpxTrades(reviews),
+    settlementNote: "Settlement estimado con SPY×10 (el índice SPX requiere plan Indices).",
   };
 }
