@@ -136,6 +136,9 @@ export interface SpxFlowTrade {
   expiration: string; // YYYY-MM-DD
   side: "ask" | "bid" | "mid" | "unknown"; // agresividad: ask = comprado, bid = vendido
   premium: number;
+  size: number; // contratos
+  oi: number; // open interest reportado al momento del trade (EOD del día anterior)
+  timestamp: string; // ISO
   gamma: number | null;
   delta: number | null;
   iv: number | null;
@@ -159,6 +162,9 @@ export function parseSpxFlow(raw: RawTrade[]): SpxFlowTrade[] {
       expiration: occ.expiration,
       side: aggressionOf(t.side),
       premium: t.premium ?? 0,
+      size: t.size ?? 0,
+      oi: t.open_interest ?? 0,
+      timestamp: t.timestamp ?? "",
       gamma: t.gamma ?? null,
       delta: t.delta ?? null,
       iv: t.implied_volatility ?? null,

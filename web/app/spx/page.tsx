@@ -2,10 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import NavTabs from "@/app/components/NavTabs";
-import type { SpxAnalysis, SpxDteSetup, SpxReviewResult, SpxWallBacktestResult } from "@/lib/spxServer";
+import type {
+  SpxAnalysis,
+  SpxDteSetup,
+  SpxReviewResult,
+  SpxWallBacktestResult,
+  SpxClosingFlowResult,
+} from "@/lib/spxServer";
 import type { SpxExtreme } from "@/lib/spx";
 import type { SpxTrade } from "@/lib/spxTradeStore";
 import type { SpxOutcome } from "@/lib/spxReview";
+
+const fmtM = (n: number) => `$${(n / 1e6).toFixed(n >= 1e6 ? 2 : 1)}M`;
 
 const EDGE_COLOR: Record<"go" | "meh" | "wait", string> = {
   go: "#12b76a",
@@ -170,6 +178,7 @@ export default function SpxPage() {
   const [dte, setDte] = useState<0 | 1>(0);
   const [review, setReview] = useState<SpxReviewResult | null>(null);
   const [backtest, setBacktest] = useState<SpxWallBacktestResult | null>(null);
+  const [closing, setClosing] = useState<SpxClosingFlowResult | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -214,11 +223,22 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadClosing = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-closing", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) setClosing(json as SpxClosingFlowResult);
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
     loadBacktest();
-  }, [load, loadReview, loadBacktest]);
+    loadClosing();
+  }, [load, loadReview, loadBacktest, loadClosing]);
 
   const save = useCallback(
     async (t: Partial<SpxTrade>) => {
@@ -503,6 +523,95 @@ export default function SpxPage() {
               </table>
             </div>
             <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{review.settlementNote}</div>
+          </section>
+        )}
+
+        {closing && (
+          <section className="scorecard" style={{ marginTop: 14 }}>
+            <b>🔔 Ventas de prima en el cierre (power hour, 15:30–16:00 ET)</b>
+            <div className="muted" style={{ fontSize: "0.82em", marginTop: 4 }}>
+              Ventas grandes al bid del vencimiento cercano en la última media hora → confirmadas
+              al día siguiente si suben el Open Interest (posición abierta overnight).
+            </div>
+
+            {closing.today.length > 0 ? (
+              <div style={{ marginTop: 10 }}>
+                <b style={{ fontSize: "0.9em" }}>Hoy en el cierre:</b>
+                <div className="table-wrap" style={{ marginTop: 6 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Contrato</th>
+                        <th className="num">DTE</th>
+                        <th className="num">Prima vendida</th>
+                        <th className="num">Contratos</th>
+                        <th className="num">OI (previo)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {closing.today.map((s) => (
+                        <tr key={`${s.type}${s.strike}${s.expiration}`}>
+                          <td>
+                            <b>{s.type === "put" ? "PUT" : "CALL"}</b> {s.strike} · {s.expiration}
+                          </td>
+                          <td className="num">{s.dte}</td>
+                          <td className="num"><b>{fmtM(s.totalPremium)}</b></td>
+                          <td className="num">{s.totalSize.toLocaleString()}</td>
+                          <td className="num muted">{s.oiAtTrade.toLocaleString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: "0.85em", marginTop: 8 }}>
+                {closing.detectedInWindow
+                  ? "Sin ventas grandes en el cierre de hoy (bajo el umbral)."
+                  : "Aún no es la ventana de cierre (o mercado cerrado). Se llena en la última media hora."}
+              </div>
+            )}
+
+            {closing.prior && closing.prior.reviews.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <b style={{ fontSize: "0.9em" }}>
+                  Confirmación de la sesión anterior ({closing.prior.date}) — ¿se sumaron al OI?
+                </b>
+                <div className="table-wrap" style={{ marginTop: 6 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Contrato</th>
+                        <th className="num">Prima vendida</th>
+                        <th className="num">OI venta</th>
+                        <th className="num">OI hoy</th>
+                        <th className="num">Δ OI</th>
+                        <th>¿Overnight?</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {closing.prior.reviews.map((r) => (
+                        <tr key={`${r.type}${r.strike}${r.expiration}`}>
+                          <td>
+                            <b>{r.type === "put" ? "PUT" : "CALL"}</b> {r.strike} · {r.expiration}
+                          </td>
+                          <td className="num">{fmtM(r.totalPremium)}</td>
+                          <td className="num muted">{r.oiAtTrade.toLocaleString()}</td>
+                          <td className="num">{r.currentOi != null ? r.currentOi.toLocaleString() : "—"}</td>
+                          <td className="num" style={{ color: (r.oiChange ?? 0) > 0 ? "#12b76a" : "#f04438", fontWeight: 700 }}>
+                            {r.oiChange != null ? `${r.oiChange > 0 ? "+" : ""}${r.oiChange.toLocaleString()}` : "—"}
+                          </td>
+                          <td style={{ color: r.confirmed ? "#12b76a" : "#98a2b3", fontWeight: 600 }}>
+                            {r.confirmed ? "✅ confirmado" : r.currentOi == null ? "sin dato" : "◑ no claro"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{closing.note}</div>
           </section>
         )}
 

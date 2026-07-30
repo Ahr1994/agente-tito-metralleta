@@ -24,6 +24,15 @@ import { fetchMacroFeeds, type NewsItem } from "./news";
 import { loadSpxIv, saveSpxIv, spxIvRank, type SpxIvRank } from "./spxIvStore";
 import { saveSpxGexSnapshot, loadSpxGexHistory } from "./spxGexStore";
 import { backtestWalls, type WallBacktest, type DayRange } from "./spxWallBacktest";
+import {
+  detectClosingSells,
+  reviewClosingSells,
+  contractKey,
+  inClosingWindow,
+  type ClosingSell,
+  type ClosingSellReview,
+} from "./closingFlow";
+import { loadCloseFlow, saveCloseFlow, priorSession } from "./spxCloseFlowStore";
 
 export interface SpxDteSetup {
   dte: 0 | 1;
@@ -127,6 +136,55 @@ export async function computeSpx(
     news: news.slice(0, 6),
     flowError,
     generatedAt: now.toISOString(),
+  };
+}
+
+export interface SpxClosingFlowResult {
+  today: ClosingSell[]; // ventas de prima detectadas hoy en el power hour
+  detectedInWindow: boolean; // hubo trades en la ventana de cierre (ya estamos en/pasado el cierre)
+  prior: { date: string; reviews: ClosingSellReview[] } | null; // sesión anterior confirmada vs OI de hoy
+  note: string;
+}
+
+/**
+ * Ventas de prima grandes en el cierre (power hour, 15:30–16:00 ET) para el vencimiento
+ * cercano, y confirmación al día siguiente contra el OI. Detecta hoy + guarda; y cruza la
+ * sesión anterior guardada con el OI actual de la cadena. Umbral configurable.
+ */
+export async function spxClosingFlow(
+  opts: { minPremium?: number } = {},
+  now: Date = new Date(),
+): Promise<SpxClosingFlowResult> {
+  const today = marketDateStr(now);
+
+  // Flujo de hoy → ventas del power hour.
+  let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  try {
+    flowTrades = (await fetchSpxFlow()).trades;
+  } catch {
+    /* cookie caducada → seguimos con lo guardado */
+  }
+  const todaySells = detectClosingSells(flowTrades, now, { minPremium: opts.minPremium });
+  const detectedInWindow = flowTrades.some((t) => inClosingWindow(Date.parse(t.timestamp)));
+  if (detectedInWindow && todaySells.length > 0) {
+    void saveCloseFlow({ date: today, detectedAt: now.toISOString(), sells: todaySells });
+  }
+
+  // Confirmación de la sesión anterior contra el OI de la cadena de hoy.
+  const history = await loadCloseFlow();
+  const previous = priorSession(history, today);
+  let prior: SpxClosingFlowResult["prior"] = null;
+  if (previous) {
+    const { quotes } = await fetchSpxChain().catch(() => ({ quotes: [] as Awaited<ReturnType<typeof fetchSpxChain>>["quotes"] }));
+    const oiMap = new Map(quotes.map((q) => [contractKey({ type: q.type, strike: q.strike, expiration: q.expiration }), q.oi]));
+    prior = { date: previous.date, reviews: reviewClosingSells(previous.sells, oiMap) };
+  }
+
+  return {
+    today: todaySells,
+    detectedInWindow,
+    prior,
+    note: "Ventas agresivas (al bid) del vencimiento cercano en los últimos 30 min. La confirmación compara el OI de hoy contra el de la venta (EOD previo); si subió ≈ lo vendido, se abrió y quedó overnight.",
   };
 }
 
