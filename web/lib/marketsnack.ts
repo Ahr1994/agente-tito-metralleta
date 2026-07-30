@@ -2,6 +2,7 @@
 // Auth por cookie de sesión (MARKETSNACK_COOKIE en .env.local). Ver SCOREDCARD/Scoredcard.md.
 
 import type { RawTrade } from "./flow";
+import { parseSpxFlow, type SpxFlowTrade } from "./spx";
 
 const BASE_URL = "https://app.marketsnack.com";
 
@@ -58,6 +59,18 @@ export async function fetchFlow(
  */
 export async function fetchMarketFlow(opts: FetchFlowOptions = {}): Promise<FlowResult> {
   return paginate(null, opts);
+}
+
+/**
+ * Flujo SPX del día ya parseado (strike/tipo/vto por OCC + agresividad bid/ask). Reusa
+ * `fetchFlow("SPX")` — MarketSnack devuelve los SPXW del 0DTE/1DTE con side y gamma, que es
+ * lo que alimenta el sesgo de flujo y ancla el GEX. Ver lib/spx.ts.
+ */
+export async function fetchSpxFlow(
+  opts: FetchFlowOptions = {},
+): Promise<{ trades: SpxFlowTrade[]; pages: number; truncated: boolean }> {
+  const { trades, pages, truncated } = await fetchFlow("SPX", { period: "1d", ...opts });
+  return { trades: parseSpxFlow(trades), pages, truncated };
 }
 
 /** Cuerpo de paginación compartido. `symbol === null` → escaneo de todo el mercado. */
