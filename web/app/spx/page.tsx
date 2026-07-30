@@ -2,10 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import NavTabs from "@/app/components/NavTabs";
-import type { SpxAnalysis, SpxDteSetup, SpxReviewResult } from "@/lib/spxServer";
+import type { SpxAnalysis, SpxDteSetup, SpxReviewResult, SpxWallBacktestResult } from "@/lib/spxServer";
 import type { SpxExtreme } from "@/lib/spx";
 import type { SpxTrade } from "@/lib/spxTradeStore";
 import type { SpxOutcome } from "@/lib/spxReview";
+
+const EDGE_COLOR: Record<"go" | "meh" | "wait", string> = {
+  go: "#12b76a",
+  meh: "#d9a406",
+  wait: "#f04438",
+};
 
 const OUTCOME: Record<SpxOutcome, { label: string; color: string }> = {
   win: { label: "✅ OTM (ganó)", color: "#12b76a" },
@@ -163,6 +169,7 @@ export default function SpxPage() {
   const [error, setError] = useState<string | null>(null);
   const [dte, setDte] = useState<0 | 1>(0);
   const [review, setReview] = useState<SpxReviewResult | null>(null);
+  const [backtest, setBacktest] = useState<SpxWallBacktestResult | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -197,10 +204,21 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadBacktest = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-backtest", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) setBacktest(json as SpxWallBacktestResult);
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
-  }, [load, loadReview]);
+    loadBacktest();
+  }, [load, loadReview, loadBacktest]);
 
   const save = useCallback(
     async (t: Partial<SpxTrade>) => {
@@ -267,6 +285,40 @@ export default function SpxPage() {
             </div>
           )}
         </section>
+
+        {data && (
+          <section
+            className="scorecard"
+            style={{
+              marginTop: 12,
+              borderLeft: `5px solid ${EDGE_COLOR[data.edge.level]}`,
+              background: `${EDGE_COLOR[data.edge.level]}12`,
+            }}
+          >
+            <div style={{ fontSize: "1.05em", fontWeight: 800, color: EDGE_COLOR[data.edge.level] }}>
+              {data.edge.headline} <span className="muted" style={{ fontWeight: 500, fontSize: "0.8em" }}>({data.edge.score}/100)</span>
+            </div>
+            <div className="muted" style={{ fontSize: "0.85em", marginTop: 4 }}>
+              {data.edge.reasons.join(" · ")}
+            </div>
+          </section>
+        )}
+
+        {data?.freshness.stale && (
+          <section
+            className="scorecard"
+            style={{
+              marginTop: 12,
+              background: data.freshness.status === "suspect" ? "#fef3f2" : "#fffaeb",
+              borderLeft: `5px solid ${data.freshness.status === "suspect" ? "#f04438" : "#f79009"}`,
+            }}
+          >
+            <b style={{ color: data.freshness.status === "suspect" ? "#b42318" : "#b54708" }}>
+              {data.freshness.status === "suspect" ? "⚠ Cadena posiblemente rezagada" : "🌙 Mercado cerrado"}
+            </b>
+            <div className="muted" style={{ fontSize: "0.85em", marginTop: 4 }}>{data.freshness.message}</div>
+          </section>
+        )}
 
         <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", margin: "12px 0" }}>
           <div style={{ display: "flex", gap: 6 }}>
@@ -451,6 +503,44 @@ export default function SpxPage() {
               </table>
             </div>
             <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{review.settlementNote}</div>
+          </section>
+        )}
+
+        {backtest && (
+          <section className="scorecard" style={{ marginTop: 14 }}>
+            <b>🧪 ¿El precio respeta los muros de GEX? ({backtest.sample} sesiones)</b>
+            {backtest.sample === 0 ? (
+              <div className="muted" style={{ fontSize: "0.85em", marginTop: 6 }}>
+                Aún no hay sesiones acumuladas. Cada día que abras esta vista se guarda la foto de
+                muros; el backtest se llena solo en unos días.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 22, marginTop: 10 }}>
+                  <div>
+                    <div className="muted" style={{ fontSize: "0.8em" }}>Muro de calls aguantó</div>
+                    <b style={{ fontSize: "1.3em", color: (backtest.callHeldRate ?? 0) >= 70 ? "#12b76a" : "#d9a406" }}>
+                      {backtest.callHeldRate ?? "—"}%
+                    </b>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: "0.8em" }}>Muro de puts aguantó</div>
+                    <b style={{ fontSize: "1.3em", color: (backtest.putHeldRate ?? 0) >= 70 ? "#12b76a" : "#d9a406" }}>
+                      {backtest.putHeldRate ?? "—"}%
+                    </b>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: "0.8em" }}>Ambos aguantaron</div>
+                    <b style={{ fontSize: "1.3em" }}>{backtest.bothHeldRate ?? "—"}%</b>
+                  </div>
+                  <div>
+                    <div className="muted" style={{ fontSize: "0.8em" }}>Cierre vs imán (prom.)</div>
+                    <b style={{ fontSize: "1.3em" }}>±{backtest.avgMagnetErrPct ?? "—"}%</b>
+                  </div>
+                </div>
+                <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{backtest.note}</div>
+              </>
+            )}
           </section>
         )}
 

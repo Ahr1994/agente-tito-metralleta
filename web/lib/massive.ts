@@ -482,8 +482,9 @@ export async function fetchEarningsDates(ticker: string): Promise<string[]> {
 
 interface SpxRawContract {
   details?: { strike_price?: number; expiration_date?: string; contract_type?: string };
-  day?: { close?: number };
-  last_trade?: { price?: number };
+  day?: { close?: number; last_updated?: number };
+  last_trade?: { price?: number; sip_timestamp?: number };
+  last_quote?: { last_updated?: number };
   greeks?: { delta?: number; gamma?: number };
   implied_volatility?: number;
   open_interest?: number;
@@ -530,6 +531,12 @@ export async function fetchSpxChain(): Promise<{ quotes: SpxQuote[]; expirations
       const price = c.day?.close ?? c.last_trade?.price ?? 0;
       if (!(strike != null && strike > 0) || (type !== "call" && type !== "put") || !expiration)
         continue;
+      // El más reciente entre trade/quote/day (ns → ms). Para detectar data stale en 0DTE.
+      const tsNs = Math.max(
+        c.last_trade?.sip_timestamp ?? 0,
+        c.last_quote?.last_updated ?? 0,
+        c.day?.last_updated ?? 0,
+      );
       quotes.push({
         strike,
         type,
@@ -539,6 +546,7 @@ export async function fetchSpxChain(): Promise<{ quotes: SpxQuote[]; expirations
         gamma: c.greeks?.gamma ?? null,
         iv: c.implied_volatility ?? null,
         oi: c.open_interest ?? 0,
+        lastUpdatedMs: tsNs > 0 ? Math.round(tsNs / 1e6) : null,
       });
     }
     // next_url se sigue con el mismo header de autorización.

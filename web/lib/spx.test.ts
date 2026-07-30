@@ -7,6 +7,8 @@ import {
   flowBias,
   atmIvSpx,
   spxSafeExtremes,
+  spxFreshness,
+  spxEdgeSignal,
   type SpxQuote,
   type SpxGex,
   type SpxFlowBias,
@@ -40,11 +42,11 @@ function q(
   price: number,
   expiration = "2026-07-30",
 ): SpxQuote {
-  return { strike, type, expiration, price, delta: null, gamma: null, iv: null, oi: 0 };
+  return { strike, type, expiration, price, delta: null, gamma: null, iv: null, oi: 0, lastUpdatedMs: null };
 }
 
 function g(strike: number, type: "call" | "put", gamma: number, oi: number): SpxQuote {
-  return { strike, type, expiration: "2026-07-30", price: 1, delta: null, gamma, iv: null, oi };
+  return { strike, type, expiration: "2026-07-30", price: 1, delta: null, gamma, iv: null, oi, lastUpdatedMs: null };
 }
 
 describe("deriveSpxSpot — paridad put-call", () => {
@@ -157,9 +159,9 @@ describe("parseSpxFlow + flowBias", () => {
 describe("atmIvSpx", () => {
   it("toma el mínimo call/put del strike más cercano al spot", () => {
     const quotes: SpxQuote[] = [
-      { strike: 7350, type: "call", expiration: "2026-07-30", price: 40, delta: 0.5, gamma: 0.001, iv: 0.12, oi: 100 },
-      { strike: 7350, type: "put", expiration: "2026-07-30", price: 40, delta: -0.5, gamma: 0.001, iv: 0.9, oi: 100 }, // iv basura
-      { strike: 7500, type: "call", expiration: "2026-07-30", price: 2, delta: 0.05, gamma: 0.0005, iv: 0.2, oi: 100 },
+      { strike: 7350, type: "call", expiration: "2026-07-30", price: 40, delta: 0.5, gamma: 0.001, iv: 0.12, oi: 100, lastUpdatedMs: null },
+      { strike: 7350, type: "put", expiration: "2026-07-30", price: 40, delta: -0.5, gamma: 0.001, iv: 0.9, oi: 100, lastUpdatedMs: null }, // iv basura
+      { strike: 7500, type: "call", expiration: "2026-07-30", price: 2, delta: 0.05, gamma: 0.0005, iv: 0.2, oi: 100, lastUpdatedMs: null },
     ];
     expect(atmIvSpx(quotes, 7352)).toBeCloseTo(0.12); // min(0.12, 0.9) del strike 7350
     expect(atmIvSpx([], 7350)).toBeNull();
@@ -176,13 +178,13 @@ describe("spxSafeExtremes — Fase 3", () => {
       [7310, 0.1, 9], [7305, 0.07, 6], [7300, 0.05, 4], [7295, 0.03, 2.5], [7290, 0.02, 1.5],
     ];
     for (const [k, d, p] of puts)
-      q.push({ strike: k, type: "put", expiration: "2026-07-30", price: p, delta: -d, gamma: 0.001, iv: 0.12, oi: 5000 });
+      q.push({ strike: k, type: "put", expiration: "2026-07-30", price: p, delta: -d, gamma: 0.001, iv: 0.12, oi: 5000, lastUpdatedMs: null });
     const calls: [number, number, number][] = [
       [7350, 0.5, 40], [7360, 0.4, 32], [7370, 0.3, 24], [7380, 0.2, 16],
       [7390, 0.1, 9], [7395, 0.07, 6], [7400, 0.05, 4], [7405, 0.03, 2.5], [7410, 0.02, 1.5],
     ];
     for (const [k, d, p] of calls)
-      q.push({ strike: k, type: "call", expiration: "2026-07-30", price: p, delta: d, gamma: 0.001, iv: 0.12, oi: 5000 });
+      q.push({ strike: k, type: "call", expiration: "2026-07-30", price: p, delta: d, gamma: 0.001, iv: 0.12, oi: 5000, lastUpdatedMs: null });
     return q;
   }
   const gex: SpxGex = {
@@ -226,6 +228,45 @@ describe("spxSafeExtremes — Fase 3", () => {
     expect(s.extremes.find((e) => e.side === "call")!.recommended).toBe(false);
     expect(s.atmIv).toBeCloseTo(0.12);
     expect(s.sigma1Pct).toBeGreaterThan(0);
+  });
+});
+
+describe("spxFreshness — data stale (idea #3)", () => {
+  const openET = new Date("2026-07-30T14:30:00Z"); // jueves 10:30 ET → mercado abierto
+  const closedET = new Date("2026-07-30T02:00:00Z"); // miércoles 22:00 ET → cerrado
+  it("live: mercado abierto y spot ≈ SPY×10", () => {
+    const r = spxFreshness(7400, 7402, openET);
+    expect(r.status).toBe("live");
+    expect(r.stale).toBe(false);
+  });
+  it("suspect: mercado abierto pero la cadena diverge de SPY×10", () => {
+    const r = spxFreshness(7400, 7460, openET); // ~0.8% de divergencia
+    expect(r.status).toBe("suspect");
+    expect(r.stale).toBe(true);
+    expect(r.divergencePct).toBeGreaterThan(0.75);
+  });
+  it("closed: fuera de horario → data del último cierre", () => {
+    const r = spxFreshness(7400, 7402, closedET);
+    expect(r.status).toBe("closed");
+    expect(r.stale).toBe(true);
+    expect(r.marketOpen).toBe(false);
+  });
+});
+
+describe("spxEdgeSignal — hoy sí hay edge (idea #2)", () => {
+  it("go cuando IV rica + γ+ + EV positivo", () => {
+    const s = spxEdgeSignal({ ivRankValue: 70, atmIv: 0.2, regime: "positive", bestEvMargin: 4, stale: false });
+    expect(s.level).toBe("go");
+    expect(s.score).toBeGreaterThanOrEqual(65);
+  });
+  it("wait cuando IV baja + EV negativo", () => {
+    const s = spxEdgeSignal({ ivRankValue: null, atmIv: 0.1, regime: "negative", bestEvMargin: -8, stale: false });
+    expect(s.level).toBe("wait");
+  });
+  it("stale fuerza wait aunque el score sea alto", () => {
+    const s = spxEdgeSignal({ ivRankValue: 80, atmIv: 0.25, regime: "positive", bestEvMargin: 5, stale: true });
+    expect(s.level).toBe("wait");
+    expect(s.headline).toMatch(/espera|vivo/i);
   });
 });
 

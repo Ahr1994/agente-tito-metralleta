@@ -2,7 +2,7 @@
 // + noticias macro para las dos expiraciones. Solo servidor.
 // Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
 
-import { fetchSpxChain, fetchDailyBars } from "./massive";
+import { fetchSpxChain, fetchDailyBars, fetchCompany } from "./massive";
 import { fetchSpxFlow } from "./marketsnack";
 import { marketDateStr } from "./occ";
 import { loadSpxTrades } from "./spxTradeStore";
@@ -14,10 +14,16 @@ import {
   flowBias,
   atmIvSpx,
   spxSafeExtremes,
+  spxFreshness,
+  spxEdgeSignal,
   type SpxSafeSetup,
+  type SpxFreshness,
+  type SpxEdgeSignal,
 } from "./spx";
 import { fetchMacroFeeds, type NewsItem } from "./news";
 import { loadSpxIv, saveSpxIv, spxIvRank, type SpxIvRank } from "./spxIvStore";
+import { saveSpxGexSnapshot, loadSpxGexHistory } from "./spxGexStore";
+import { backtestWalls, type WallBacktest, type DayRange } from "./spxWallBacktest";
 
 export interface SpxDteSetup {
   dte: 0 | 1;
@@ -31,6 +37,8 @@ export interface SpxAnalysis {
   spotDerived: true; // el índice da 403 → siempre derivado por paridad
   ivRank: SpxIvRank;
   atmIv: number | null; // decimal
+  freshness: SpxFreshness; // idea #3: data stale
+  edge: SpxEdgeSignal; // idea #2: ¿hoy hay edge?
   zero: SpxDteSetup | null;
   one: SpxDteSetup | null;
   news: NewsItem[];
@@ -49,6 +57,10 @@ export async function computeSpx(
   const { quotes } = await fetchSpxChain();
   const spot = deriveSpxSpot(quotes);
   const { zeroDte, oneDte, zeroExp, oneExp } = splitByDte(quotes, now);
+
+  // SPY×10 en vivo como referencia para detectar rezago de la cadena (idea #3).
+  const spy = await fetchCompany("SPY").catch(() => null);
+  const refSpot = spy?.price && spy.price > 0 ? spy.price * 10 : null;
 
   // Flujo (puede fallar si la cookie caducó — no bloquea el resto).
   let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
@@ -77,16 +89,67 @@ export async function computeSpx(
     return { dte, expiration: exp, contracts: set.length, setup };
   };
 
+  const zero = build(zeroDte, zeroExp, 0);
+  const one = build(oneDte, oneExp, 1);
+
+  // Frescura de la data (idea #3): mercado abierto + divergencia spot derivado vs SPY×10.
+  const freshness = spxFreshness(spot, refSpot, now);
+
+  // Foto de muros del 0DTE para el backtest (idea #5), y señal de edge (idea #2).
+  const frontSetup = zero ?? one;
+  if (frontSetup && spot) {
+    const g = frontSetup.setup.gex;
+    void saveSpxGexSnapshot({ spot, putWall: g.putWall, callWall: g.callWall, magnet: g.magnet, regime: g.regime }, now);
+  }
+  const bestEvMargin = frontSetup
+    ? frontSetup.setup.extremes.reduce<number | null>(
+        (best, e) => (best == null || e.evMargin > best ? e.evMargin : best),
+        null,
+      )
+    : null;
+  const edge = spxEdgeSignal({
+    ivRankValue: ivRank.value,
+    atmIv,
+    regime: frontSetup?.setup.gex.regime ?? "positive",
+    bestEvMargin,
+    stale: freshness.stale,
+  });
+
   return {
     spot,
     spotDerived: true,
     ivRank,
     atmIv,
-    zero: build(zeroDte, zeroExp, 0),
-    one: build(oneDte, oneExp, 1),
+    freshness,
+    edge,
+    zero,
+    one,
     news: news.slice(0, 6),
     flowError,
     generatedAt: now.toISOString(),
+  };
+}
+
+export interface SpxWallBacktestResult extends WallBacktest {
+  note: string;
+}
+
+/**
+ * Backtest de la tesis del muro (idea #5): cruza las fotos diarias de muros con el rango real
+ * de cada día (SPY×10) → ¿el precio respetó los muros? Necesita días acumulados en el store.
+ */
+export async function backtestSpxWalls(now: Date = new Date()): Promise<SpxWallBacktestResult> {
+  const [snapshots, bars] = await Promise.all([
+    loadSpxGexHistory(),
+    fetchDailyBars("SPY", 200).catch(() => []),
+  ]);
+  const today = marketDateStr(now);
+  const ranges: DayRange[] = bars
+    .filter((b) => b.time < today) // solo días ya cerrados
+    .map((b) => ({ date: b.time, high: b.high * 10, low: b.low * 10, close: b.close * 10 }));
+  return {
+    ...backtestWalls(snapshots, ranges),
+    note: "Muros vs rango del día (SPY×10). Los muros se guardan 1×/día, así que es una aproximación intradía; el valor crece al acumular sesiones.",
   };
 }
 

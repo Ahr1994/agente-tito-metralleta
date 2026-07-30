@@ -14,6 +14,7 @@ export interface SpxQuote {
   gamma: number | null;
   iv: number | null; // decimal
   oi: number;
+  lastUpdatedMs: number | null; // última actualización del contrato (para detectar data stale)
 }
 
 /**
@@ -219,6 +220,74 @@ export function spxDailySigmaPct(iv: number): number {
   return iv * Math.sqrt(1 / 365) * 100;
 }
 
+// Este plan de Massive NO da timestamp real por contrato (last_trade/last_quote vienen vacíos;
+// day.last_updated es siempre medianoche). Así que la frescura se juzga por dos señales reales:
+// (a) si el mercado está abierto ahora (hora ET), y (b) si el spot derivado de las opciones
+// diverge del SPY×10 en vivo — dos derivaciones del mismo índice que deberían coincidir.
+export const SPX_DIVERGENCE_PCT = 0.75;
+
+export type SpxDataStatus = "live" | "closed" | "suspect";
+
+export interface SpxFreshness {
+  status: SpxDataStatus;
+  marketOpen: boolean;
+  divergencePct: number | null; // |spot derivado − SPY×10| / SPY×10 × 100
+  stale: boolean; // status !== "live"
+  message: string;
+}
+
+/** ¿Está el mercado de EE.UU. en sesión regular ahora (Lun-Vie 9:30–16:00 ET)? Sin festivos. */
+export function isMarketOpenET(now: Date): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const wd = parts.find((p) => p.type === "weekday")?.value ?? "";
+  const hh = Number(parts.find((p) => p.type === "hour")?.value ?? "0") % 24;
+  const mm = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+  const mins = hh * 60 + mm;
+  return !["Sat", "Sun"].includes(wd) && mins >= 570 && mins < 960; // 9:30–16:00
+}
+
+/**
+ * Frescura de la data 0DTE. `refSpot` = SPY×10 en vivo. Marca stale si el mercado está cerrado
+ * (data del último cierre, no en vivo) o si la cadena diverge de SPY×10 (viene rezagada).
+ */
+export function spxFreshness(
+  derivedSpot: number | null,
+  refSpot: number | null,
+  now: Date = new Date(),
+): SpxFreshness {
+  const marketOpen = isMarketOpenET(now);
+  const divergencePct =
+    derivedSpot != null && refSpot != null && refSpot > 0
+      ? (Math.abs(derivedSpot - refSpot) / refSpot) * 100
+      : null;
+
+  if (!marketOpen) {
+    return {
+      status: "closed",
+      marketOpen: false,
+      divergencePct,
+      stale: true,
+      message: "Mercado cerrado — muestra la última cadena disponible, no datos en vivo.",
+    };
+  }
+  if (divergencePct != null && divergencePct > SPX_DIVERGENCE_PCT) {
+    return {
+      status: "suspect",
+      marketOpen: true,
+      divergencePct,
+      stale: true,
+      message: `La cadena diverge ${divergencePct.toFixed(1)}% de SPY×10 — puede venir rezagada; refresca.`,
+    };
+  }
+  return { status: "live", marketOpen: true, divergencePct, stale: false, message: "" };
+}
+
 export interface SpxExtreme {
   side: "put" | "call";
   spread: Spread; // reusa premiumSell.Spread (crédito/máx-pérdida/BE/R-R/ProbOTM)
@@ -382,6 +451,84 @@ export function spxSafeExtremes(
     });
   }
   return { spot, expiration, atmIv: iv, sigma1Pct, gex, bias, extremes };
+}
+
+export interface SpxEdgeSignal {
+  level: "go" | "meh" | "wait"; // 🟢 hay edge / 🟡 flojo / 🔴 espera
+  score: number; // 0-100
+  headline: string;
+  reasons: string[];
+}
+
+/**
+ * Señal "¿hoy SÍ hay edge para vender prima?". Como casi todos los días el 0DTE sale al filo
+ * (IV baja), esto te avisa cuándo vale la pena: IV rica (Rank alto o IV alta) + régimen que
+ * pinnea + que exista un extremo con EV no-negativo. Si la data está stale → espera.
+ */
+export function spxEdgeSignal(input: {
+  ivRankValue: number | null;
+  atmIv: number | null; // decimal
+  regime: "positive" | "negative";
+  bestEvMargin: number | null; // el mejor evMargin entre los extremos
+  stale: boolean;
+}): SpxEdgeSignal {
+  const { ivRankValue, atmIv, regime, bestEvMargin, stale } = input;
+  const reasons: string[] = [];
+
+  // IV (lo que más pesa: vender prima rinde con IV rica).
+  let ivScore: number;
+  if (ivRankValue != null) {
+    ivScore = ivRankValue >= 60 ? 40 : ivRankValue >= 40 ? 25 : ivRankValue >= 25 ? 12 : 0;
+    reasons.push(`IV Rank ${ivRankValue.toFixed(0)} (${ivRankValue >= 50 ? "rica" : "baja"})`);
+  } else if (atmIv != null) {
+    const pct = atmIv * 100;
+    ivScore = pct >= 18 ? 38 : pct >= 14 ? 22 : pct >= 11 ? 10 : 0;
+    reasons.push(`IV ATM ${pct.toFixed(0)}% (${pct >= 15 ? "elevada" : "baja"}, sin IV Rank aún)`);
+  } else {
+    ivScore = 0;
+    reasons.push("sin IV");
+  }
+
+  // Régimen: gamma positiva pinnea (bueno para vender prima); negativa amplifica.
+  const regimeScore = regime === "positive" ? 25 : 5;
+  reasons.push(regime === "positive" ? "γ+ (pinnea el precio)" : "γ− (amplifica, riesgo de tendencia)");
+
+  // EV: ¿existe un extremo vendible?
+  let evScore: number;
+  if (bestEvMargin == null) {
+    evScore = 0;
+    reasons.push("sin extremos");
+  } else if (bestEvMargin >= 3) {
+    evScore = 35;
+    reasons.push(`mejor EV +${bestEvMargin} (positivo)`);
+  } else if (bestEvMargin >= 0) {
+    evScore = 25;
+    reasons.push(`mejor EV +${bestEvMargin} (al filo)`);
+  } else if (bestEvMargin >= -3) {
+    evScore = 12;
+    reasons.push(`mejor EV ${bestEvMargin} (casi breakeven)`);
+  } else {
+    evScore = 0;
+    reasons.push(`mejor EV ${bestEvMargin} (negativo)`);
+  }
+
+  const score = ivScore + regimeScore + evScore;
+  let level: SpxEdgeSignal["level"];
+  let headline: string;
+  if (stale) {
+    level = "wait";
+    headline = "⏸ Espera — data no en vivo (revisa el aviso)";
+  } else if (score >= 65) {
+    level = "go";
+    headline = "🟢 Hoy SÍ hay edge para vender prima";
+  } else if (score >= 40) {
+    level = "meh";
+    headline = "🟡 Edge flojo — se puede, sin entusiasmo";
+  } else {
+    level = "wait";
+    headline = "🔴 Mejor espera — poca prima / poco edge";
+  }
+  return { level, score, headline, reasons };
 }
 
 /**
