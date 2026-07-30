@@ -61,7 +61,7 @@ function closestStrike(strikes: number[], target: number): number | null {
   return strikes.reduce((a, b) => (Math.abs(b - target) < Math.abs(a - target) ? b : a));
 }
 
-function buildSpread(
+export function buildSpread(
   kind: SpreadKind,
   quotes: OptionQuote[],
   shortStrike: number,

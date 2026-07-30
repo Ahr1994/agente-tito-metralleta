@@ -3,6 +3,7 @@
 
 import { marketDateStr, parseOcc } from "./occ";
 import { aggressionOf, type RawTrade } from "./flow";
+import { buildSpread, type OptionQuote, type LevelLite, type Spread } from "./premiumSell";
 
 export interface SpxQuote {
   strike: number;
@@ -196,6 +197,140 @@ export function flowBias(trades: SpxFlowTrade[]): SpxFlowBias {
   const lean = netPct > 15 ? "bullish" : netPct < -15 ? "bearish" : "neutral";
   const sellSide = lean === "bullish" ? "put" : lean === "bearish" ? "call" : "either";
   return { bullishPremium: bull, bearishPremium: bear, netPct, lean, sellSide };
+}
+
+/**
+ * IV ATM de SPX: strike más cercano al spot, tomando el **mínimo** de call/put IV (robusto a
+ * una pata con IV basura, como en earnings). Devuelve decimal (0.12 = 12%).
+ */
+export function atmIvSpx(quotes: SpxQuote[], spot: number): number | null {
+  if (!(spot > 0)) return null;
+  const strikes = [...new Set(quotes.map((q) => q.strike))];
+  if (strikes.length === 0) return null;
+  const k = strikes.reduce((a, b) => (Math.abs(b - spot) < Math.abs(a - spot) ? b : a));
+  const ivs = quotes
+    .filter((q) => q.strike === k && q.iv != null && q.iv > 0)
+    .map((q) => q.iv as number);
+  return ivs.length ? Math.min(...ivs) : null;
+}
+
+/** Move diario 1σ en % desde la IV anualizada: IV·√(1/365)·100. */
+export function spxDailySigmaPct(iv: number): number {
+  return iv * Math.sqrt(1 / 365) * 100;
+}
+
+export interface SpxExtreme {
+  side: "put" | "call";
+  spread: Spread; // reusa premiumSell.Spread (crédito/máx-pérdida/BE/R-R/ProbOTM)
+  anchor: "wall" | "sigma" | "delta"; // qué restricción mandó al elegir el short
+  wall: number | null; // muro de GEX de referencia de ese lado
+  breakevenWinPct: number; // % de aciertos que necesita para EV=0 (asume máx pérdida siempre = pesimista)
+  evMargin: number; // ProbOTM − breakevenWinPct (puntos). >0 no-negativo; −1 es al filo, −20 es malo
+  evOk: boolean; // evMargin ≥ 0
+  recommended: boolean; // el lado que sugiere el flujo agresivo
+}
+
+export interface SpxSafeSetup {
+  spot: number;
+  expiration: string | null;
+  atmIv: number | null; // decimal
+  sigma1Pct: number; // move diario 1σ en %
+  gex: SpxGex;
+  bias: SpxFlowBias;
+  extremes: SpxExtreme[]; // put y/o call, con el flag recommended
+}
+
+/**
+ * Elige el short strike **anclado al muro de GEX** (donde el dealer defiende el precio): el
+ * primer strike justo fuera del muro. Si ahí el |delta| supera el tope (demasiado cerca/arriesgado),
+ * lo empuja hacia afuera hasta cumplir el tope. Si no hay muro, cae a N·σ. Este anclaje da
+ * crédito real y defendido — mucho mejor EV que "lo más externo posible". `anchor` = qué mandó.
+ *
+ * Aprendizaje en vivo (2026-07-30): anclar al más-externo-entre-muro+σ+delta daba spreads
+ * 94% OTM pero EV-negativo (cobraban migajas). El muro es la cola defendible correcta.
+ */
+function pickSafeShort(
+  sideQuotes: SpxQuote[],
+  side: "put" | "call",
+  spot: number,
+  wall: number | null,
+  sigmaAbs: number,
+  maxDelta: number,
+): { strike: number; anchor: "wall" | "sigma" | "delta" } | null {
+  const isPut = side === "put";
+  const otm = sideQuotes
+    .filter((q) => q.delta != null && (isPut ? q.strike < spot : q.strike > spot))
+    .sort((a, b) => (isPut ? b.strike - a.strike : a.strike - b.strike)); // del menos al más externo
+  if (otm.length === 0) return null;
+
+  // Ancla base: el muro (primer strike fuera del muro); si no hay muro, N·σ.
+  const sigmaStrike = isPut ? spot - sigmaAbs : spot + sigmaAbs;
+  const base = wall ?? sigmaStrike;
+  let anchor: "wall" | "sigma" | "delta" = wall != null ? "wall" : "sigma";
+
+  // Empezar en el primer strike al-menos-tan-externo como el ancla base.
+  let idx = otm.findIndex((q) => (isPut ? q.strike <= base : q.strike >= base));
+  if (idx === -1) idx = otm.length - 1; // el ancla queda fuera de la cadena → el más externo
+
+  // Empujar hacia afuera mientras el |delta| supere el tope (demasiado arriesgado en el muro).
+  while (idx < otm.length - 1 && Math.abs(otm[idx].delta as number) > maxDelta) {
+    idx += 1;
+    anchor = "delta";
+  }
+  return { strike: otm[idx].strike, anchor };
+}
+
+/**
+ * Extremos safe para vender prima en 0DTE/1DTE. Ancla el short a los **muros de GEX** (donde
+ * el dealer pinnea) además de σ y delta, arma el credit spread (reusa `buildSpread`), aplica
+ * el **filtro de EV** (win% para breakeven vs ProbOTM) y marca el lado que sugiere el flujo.
+ * `quotes` = un solo DTE. Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
+ */
+export function spxSafeExtremes(
+  quotes: SpxQuote[],
+  spot: number,
+  gex: SpxGex,
+  bias: SpxFlowBias,
+  opts: { maxDelta?: number; sigmaMult?: number; width?: number } = {},
+): SpxSafeSetup {
+  const maxDelta = opts.maxDelta ?? 0.25; // tope de |delta| del short (no vender más cerca)
+  const sigmaMult = opts.sigmaMult ?? 1;
+  const width = opts.width ?? 5;
+  const iv = atmIvSpx(quotes, spot);
+  const sigma1Pct = iv != null ? spxDailySigmaPct(iv) : 0;
+  const sigmaAbs = (sigma1Pct / 100) * spot * sigmaMult;
+  const expiration = quotes[0]?.expiration ?? null;
+
+  const oq: OptionQuote[] = quotes
+    .filter((q) => q.delta != null)
+    .map((q) => ({ strike: q.strike, type: q.type, price: q.price, delta: q.delta as number, oi: q.oi }));
+  const walls: LevelLite[] = [gex.putWall, gex.callWall, gex.magnet]
+    .filter((x): x is number => x != null)
+    .map((price) => ({ price, strength: 100 }));
+
+  const extremes: SpxExtreme[] = [];
+  for (const side of ["put", "call"] as const) {
+    const wall = side === "put" ? gex.putWall : gex.callWall;
+    const pick = pickSafeShort(quotes.filter((q) => q.type === side), side, spot, wall, sigmaAbs, maxDelta);
+    if (!pick) continue;
+    const spread = buildSpread(side === "put" ? "bull_put" : "bear_call", oq, pick.strike, width, walls);
+    if (!spread) continue;
+    const risk = spread.maxLoss;
+    const reward = spread.credit * 100;
+    const breakevenWinPct = risk + reward > 0 ? Math.round((risk / (risk + reward)) * 100) : 100;
+    const evMargin = spread.probOTM - breakevenWinPct;
+    extremes.push({
+      side,
+      spread,
+      anchor: pick.anchor,
+      wall,
+      breakevenWinPct,
+      evMargin,
+      evOk: evMargin >= 0,
+      recommended: bias.sellSide === side || bias.sellSide === "either",
+    });
+  }
+  return { spot, expiration, atmIv: iv, sigma1Pct, gex, bias, extremes };
 }
 
 /**
