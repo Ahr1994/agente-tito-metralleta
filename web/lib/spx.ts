@@ -226,6 +226,39 @@ export function spxDailySigmaPct(iv: number): number {
   return iv * Math.sqrt(1 / 365) * 100;
 }
 
+export interface SpxPositionSize {
+  contracts: number; // nº de spreads que caben en el colateral objetivo
+  totalCredit: number; // $ de crédito total
+  totalCollateral: number; // $ de colateral (máx pérdida) total
+  creditPerSpread: number; // $
+  collateralPerSpread: number; // $ (máx pérdida por spread)
+}
+
+/**
+ * Sizing del vendedor de prima: cuántos spreads caben en el colateral objetivo y el crédito
+ * total resultante. El colateral por spread = máx pérdida (ya en $). Tope de `maxContracts`
+ * para no pasarse. Ej. típico del usuario: budget $2,000 → ~4-6 spreads, $400-600 de crédito.
+ */
+export function sizeSpxPosition(
+  creditPerShare: number,
+  maxLossPerSpread: number,
+  collateralBudget: number,
+  maxContracts = 50,
+): SpxPositionSize {
+  const collateralPerSpread = maxLossPerSpread;
+  const creditPerSpread = Math.round(creditPerShare * 100);
+  const fit =
+    collateralPerSpread > 0 ? Math.floor(collateralBudget / collateralPerSpread) : 0;
+  const contracts = Math.max(0, Math.min(fit, maxContracts));
+  return {
+    contracts,
+    totalCredit: creditPerSpread * contracts,
+    totalCollateral: collateralPerSpread * contracts,
+    creditPerSpread,
+    collateralPerSpread,
+  };
+}
+
 // Este plan de Massive NO da timestamp real por contrato (last_trade/last_quote vienen vacíos;
 // day.last_updated es siempre medianoche). Así que la frescura se juzga por dos señales reales:
 // (a) si el mercado está abierto ahora (hora ET), y (b) si el spot derivado de las opciones

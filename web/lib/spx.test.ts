@@ -9,6 +9,7 @@ import {
   spxSafeExtremes,
   spxFreshness,
   spxEdgeSignal,
+  sizeSpxPosition,
   type SpxQuote,
   type SpxGex,
   type SpxFlowBias,
@@ -228,6 +229,27 @@ describe("spxSafeExtremes — Fase 3", () => {
     expect(s.extremes.find((e) => e.side === "call")!.recommended).toBe(false);
     expect(s.atmIv).toBeCloseTo(0.12);
     expect(s.sigma1Pct).toBeGreaterThan(0);
+  });
+});
+
+describe("sizeSpxPosition — sizing del vendedor (idea #6)", () => {
+  it("cuántos spreads caben en el colateral objetivo + totales", () => {
+    // crédito $0.90/acción, máx pérdida $410/spread, budget $2000
+    const s = sizeSpxPosition(0.9, 410, 2000);
+    expect(s.contracts).toBe(4); // floor(2000/410)
+    expect(s.creditPerSpread).toBe(90);
+    expect(s.totalCredit).toBe(360); // 90×4
+    expect(s.totalCollateral).toBe(1640); // 410×4
+  });
+  it("con crédito ~$100 y budget $2000 da 4-6 spreads y $400-600 (perfil del usuario)", () => {
+    const s = sizeSpxPosition(1.0, 400, 2000);
+    expect(s.contracts).toBe(5);
+    expect(s.totalCredit).toBe(500);
+    expect(s.totalCollateral).toBe(2000);
+  });
+  it("respeta el tope y evita división por cero", () => {
+    expect(sizeSpxPosition(0.5, 100, 100000, 6).contracts).toBe(6); // tope
+    expect(sizeSpxPosition(0.5, 0, 2000).contracts).toBe(0); // sin colateral válido
   });
 });
 

@@ -9,7 +9,7 @@ import type {
   SpxWallBacktestResult,
   SpxClosingFlowResult,
 } from "@/lib/spxServer";
-import type { SpxExtreme } from "@/lib/spx";
+import { sizeSpxPosition, type SpxExtreme } from "@/lib/spx";
 import type { SpxTrade } from "@/lib/spxTradeStore";
 import type { SpxOutcome } from "@/lib/spxReview";
 
@@ -38,15 +38,18 @@ function ExtremeCard({
   ex,
   dte,
   setup,
+  budget,
   onSave,
 }: {
   ex: SpxExtreme;
   dte: 0 | 1;
   setup: SpxDteSetup["setup"];
+  budget: number;
   onSave: (t: Partial<SpxTrade>) => void;
 }) {
   const s = ex.spread;
   const ev = evBadge(ex.evMargin);
+  const size = sizeSpxPosition(s.credit, s.maxLoss, budget);
   const sideLabel = ex.side === "put" ? "PUT · Bull Put (vender abajo)" : "CALL · Bear Call (vender arriba)";
   return (
     <div
@@ -79,6 +82,19 @@ function ExtremeCard({
           Ancla: {ex.anchor === "wall" ? "muro GEX" : ex.anchor === "credit" ? "prima" : ex.anchor}
         </span>
       </div>
+      <div
+        style={{
+          marginTop: 8,
+          padding: "6px 8px",
+          background: "#f2f4f7",
+          borderRadius: 8,
+          fontSize: "0.86em",
+        }}
+      >
+        📦 Tu tamaño (colateral ${budget.toLocaleString()}):{" "}
+        <b>{size.contracts} spreads</b> → crédito <b style={{ color: "#12b76a" }}>${size.totalCredit}</b>
+        {" · "}colateral <b>${size.totalCollateral.toLocaleString()}</b>
+      </div>
       <button
         className="rescan"
         style={{ marginTop: 10, width: "100%" }}
@@ -107,7 +123,15 @@ function ExtremeCard({
   );
 }
 
-function DteView({ d, onSave }: { d: SpxDteSetup; onSave: (t: Partial<SpxTrade>) => void }) {
+function DteView({
+  d,
+  budget,
+  onSave,
+}: {
+  d: SpxDteSetup;
+  budget: number;
+  onSave: (t: Partial<SpxTrade>) => void;
+}) {
   const { setup } = d;
   const g = setup.gex;
   return (
@@ -161,7 +185,7 @@ function DteView({ d, onSave }: { d: SpxDteSetup; onSave: (t: Partial<SpxTrade>)
       {setup.extremes.length > 0 ? (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
           {setup.extremes.map((ex) => (
-            <ExtremeCard key={ex.side} ex={ex} dte={d.dte} setup={setup} onSave={onSave} />
+            <ExtremeCard key={ex.side} ex={ex} dte={d.dte} setup={setup} budget={budget} onSave={onSave} />
           ))}
         </div>
       ) : (
@@ -183,6 +207,7 @@ export default function SpxPage() {
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
   const [cMax, setCMax] = useState(100);
+  const [budget, setBudget] = useState(2000);
 
   const load = useCallback(async () => {
     setBusy(true);
@@ -397,6 +422,16 @@ export default function SpxPage() {
                 </button>
               </div>
             )}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: "0.9em", marginLeft: "auto" }}>
+              <span className="muted">📦 Colateral objetivo $</span>
+              <input
+                type="number"
+                value={budget}
+                step={500}
+                onChange={(e) => setBudget(Math.max(0, Number(e.target.value)))}
+                style={{ width: 80, padding: "4px 6px", border: "1px solid #d0d5dd", borderRadius: 6 }}
+              />
+            </div>
           </div>
           <div className="muted" style={{ fontSize: "0.8em", marginTop: 6 }}>
             {mode === "prima"
@@ -421,7 +456,7 @@ export default function SpxPage() {
         {busy && !data && <div className="muted">Cargando cadena SPX…</div>}
 
         {active ? (
-          <DteView d={active} onSave={save} />
+          <DteView d={active} budget={budget} onSave={save} />
         ) : (
           data && !busy && (
             <div className="muted">No hay cadena para {dte}DTE ahora mismo (mercado cerrado o sin vencimiento).</div>
