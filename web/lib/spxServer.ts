@@ -5,7 +5,7 @@
 import { fetchSpxChain, fetchDailyBars, fetchCompany } from "./massive";
 import { fetchSpxFlow } from "./marketsnack";
 import { marketDateStr } from "./occ";
-import { loadSpxTrades } from "./spxTradeStore";
+import { loadSpxTrades, type SpxTrade } from "./spxTradeStore";
 import { reviewSpxTrade, summarizeSpxTrades, type SpxTradeReview, type SpxTrackRecord } from "./spxReview";
 import {
   deriveSpxSpot,
@@ -16,6 +16,7 @@ import {
   spxSafeExtremes,
   spxFreshness,
   spxEdgeSignal,
+  spxDailySigmaPct,
   type SpxSafeSetup,
   type SpxFreshness,
   type SpxEdgeSignal,
@@ -33,6 +34,7 @@ import {
   type ClosingSellReview,
 } from "./closingFlow";
 import { loadCloseFlow, saveCloseFlow, priorSession } from "./spxCloseFlowStore";
+import { monitorPosition, type PositionStatus, type PositionMarket } from "./positionMonitor";
 
 export interface SpxDteSetup {
   dte: 0 | 1;
@@ -238,5 +240,78 @@ export async function reviewSpxTrades(now: Date = new Date()): Promise<SpxReview
     reviews,
     record: summarizeSpxTrades(reviews),
     settlementNote: "Settlement estimado con SPY×10 (el índice SPX requiere plan Indices).",
+  };
+}
+
+export interface SpxMonitorPosition {
+  trade: SpxTrade;
+  spot: number | null;
+  status: PositionStatus;
+}
+
+export interface SpxMonitorResult {
+  positions: SpxMonitorPosition[]; // tus spreads guardados que aún no vencen
+  spot: number | null;
+  generatedAt: string;
+  note: string;
+}
+
+/**
+ * Monitor en vivo de las posiciones abiertas (spreads guardados con expiración ≥ hoy). Para
+ * cada una arma el mercado actual (spot, delta/mark del short, flujo agresivo en contra, muro
+ * que defiende, σ del día) y pide la recomendación aguantar/vigilar/cerrar/salir. Pensado para
+ * pollear cada ~minuto durante la sesión.
+ */
+export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResult> {
+  const today = marketDateStr(now);
+  const open = (await loadSpxTrades()).filter((t) => t.expiration && t.expiration >= today);
+  if (open.length === 0) {
+    return { positions: [], spot: null, generatedAt: now.toISOString(), note: "Sin posiciones abiertas. Guarda un spread con ⭐ para monitorearlo." };
+  }
+
+  const { quotes } = await fetchSpxChain();
+  const spot = deriveSpxSpot(quotes);
+  let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  try {
+    flowTrades = (await fetchSpxFlow({ maxPages: 4 })).trades; // solo lo reciente
+  } catch {
+    /* cookie caducada → seguimos sin flujo */
+  }
+
+  const positions: SpxMonitorPosition[] = open.map((t) => {
+    const exp = t.expiration as string;
+    const isPut = t.kind === "bull_put";
+    const legType = isPut ? "put" : "call";
+    const set = quotes.filter((q) => q.expiration === exp);
+    const gex = spot ? spxGex(set, spot) : null;
+    const iv = spot ? atmIvSpx(set, spot) : null;
+    const bias = flowBias(flowTrades.filter((f) => f.expiration === exp));
+    const short = set.find((q) => q.strike === t.shortStrike && q.type === legType);
+    const long = set.find((q) => q.strike === t.longStrike && q.type === legType);
+
+    const market: PositionMarket = {
+      spot: spot ?? 0,
+      shortDelta: short?.delta != null ? Math.abs(short.delta) : null,
+      shortMark: short?.price ?? null,
+      longMark: long?.price ?? null,
+      adversePremium: isPut ? bias.bearishPremium : bias.bullishPremium,
+      favorablePremium: isPut ? bias.bullishPremium : bias.bearishPremium,
+      flowLean: bias.lean,
+      regime: gex?.regime ?? "positive",
+      defendingWall: isPut ? (gex?.putWall ?? null) : (gex?.callWall ?? null),
+      sigma1Pct: iv != null ? spxDailySigmaPct(iv) : 0,
+    };
+    const status = monitorPosition(
+      { kind: t.kind, shortStrike: t.shortStrike, longStrike: t.longStrike, credit: t.credit, expiration: exp },
+      market,
+    );
+    return { trade: t, spot, status };
+  });
+
+  return {
+    positions,
+    spot,
+    generatedAt: now.toISOString(),
+    note: "Monitorea tus spreads guardados (⭐) que aún no vencen. Flujo en contra = compras agresivas del lado opuesto a tu venta.",
   };
 }

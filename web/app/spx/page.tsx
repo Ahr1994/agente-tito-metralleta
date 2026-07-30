@@ -8,7 +8,16 @@ import type {
   SpxReviewResult,
   SpxWallBacktestResult,
   SpxClosingFlowResult,
+  SpxMonitorResult,
 } from "@/lib/spxServer";
+import type { MonitorAction } from "@/lib/positionMonitor";
+
+const ACTION_STYLE: Record<MonitorAction, { color: string; bg: string; label: string }> = {
+  hold: { color: "#12b76a", bg: "#ecfdf3", label: "AGUANTA" },
+  take_profit: { color: "#175cd3", bg: "#eff8ff", label: "CERRAR (profit)" },
+  watch: { color: "#b54708", bg: "#fffaeb", label: "VIGILA" },
+  exit: { color: "#b42318", bg: "#fef3f2", label: "EVALÚA SALIR" },
+};
 import { sizeSpxPosition, type SpxExtreme } from "@/lib/spx";
 import type { SpxTrade } from "@/lib/spxTradeStore";
 import type { SpxOutcome } from "@/lib/spxReview";
@@ -91,9 +100,9 @@ function ExtremeCard({
           fontSize: "0.86em",
         }}
       >
-        📦 Tu tamaño (colateral ${budget.toLocaleString()}):{" "}
+        📦 Tu tamaño (colateral ${(budget ?? 0).toLocaleString()}):{" "}
         <b>{size.contracts} spreads</b> → crédito <b style={{ color: "#12b76a" }}>${size.totalCredit}</b>
-        {" · "}colateral <b>${size.totalCollateral.toLocaleString()}</b>
+        {" · "}colateral <b>${(size.totalCollateral ?? 0).toLocaleString()}</b>
       </div>
       <button
         className="rescan"
@@ -203,6 +212,8 @@ export default function SpxPage() {
   const [review, setReview] = useState<SpxReviewResult | null>(null);
   const [backtest, setBacktest] = useState<SpxWallBacktestResult | null>(null);
   const [closing, setClosing] = useState<SpxClosingFlowResult | null>(null);
+  const [monitor, setMonitor] = useState<SpxMonitorResult | null>(null);
+  const [monitorAt, setMonitorAt] = useState<number | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -258,12 +269,35 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadMonitor = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-monitor", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) {
+        setMonitor(json as SpxMonitorResult);
+        setMonitorAt(Date.now());
+      }
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
     loadBacktest();
     loadClosing();
-  }, [load, loadReview, loadBacktest, loadClosing]);
+    loadMonitor();
+  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor]);
+
+  // Auto-refresh del monitor cada 60s mientras haya posiciones abiertas y la pestaña esté visible.
+  useEffect(() => {
+    if (!monitor || monitor.positions.length === 0) return;
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") loadMonitor();
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [monitor, loadMonitor]);
 
   const save = useCallback(
     async (t: Partial<SpxTrade>) => {
@@ -275,6 +309,7 @@ export default function SpxPage() {
         });
         if (res.ok) {
           void loadReview();
+          void loadMonitor();
           setFlash(`Guardado: ${t.kind} ${t.shortStrike}/${t.longStrike}`);
           setTimeout(() => setFlash(null), 2500);
         }
@@ -282,7 +317,7 @@ export default function SpxPage() {
         /* ignora */
       }
     },
-    [loadReview],
+    [loadReview, loadMonitor],
   );
 
   const active = data ? (dte === 0 ? data.zero : data.one) : null;
@@ -362,6 +397,47 @@ export default function SpxPage() {
               {data.freshness.status === "suspect" ? "⚠ Cadena posiblemente rezagada" : "🌙 Mercado cerrado"}
             </b>
             <div className="muted" style={{ fontSize: "0.85em", marginTop: 4 }}>{data.freshness.message}</div>
+          </section>
+        )}
+
+        {monitor && monitor.positions.length > 0 && (
+          <section className="scorecard" style={{ marginTop: 12, border: "2px solid #101828" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <b>🎯 Monitor de posiciones abiertas</b>
+              <span className="muted" style={{ fontSize: "0.78em" }}>
+                <span style={{ color: "#f04438" }}>●</span> en vivo
+                {monitorAt && ` · actualizado ${Math.round((Date.now() - monitorAt) / 1000)}s atrás`} · auto 60s
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
+              {monitor.positions.map((p) => {
+                const st = p.status;
+                const a = ACTION_STYLE[st.action];
+                return (
+                  <div
+                    key={p.trade.id}
+                    style={{ borderLeft: `5px solid ${a.color}`, background: a.bg, borderRadius: 8, padding: "10px 12px" }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+                      <b>
+                        {p.trade.kind === "bull_put" ? "PUT" : "CALL"} {p.trade.shortStrike}/{p.trade.longStrike} ·{" "}
+                        <span className="muted" style={{ fontWeight: 400 }}>vto {p.trade.expiration}</span>
+                      </b>
+                      <b style={{ color: a.color }}>{st.headline}</b>
+                    </div>
+                    <div className="muted" style={{ fontSize: "0.85em", marginTop: 4 }}>
+                      {st.reasons.join(" · ")}
+                    </div>
+                    {st.adverse && st.action !== "hold" && (
+                      <div style={{ color: "#b42318", fontWeight: 700, fontSize: "0.85em", marginTop: 4 }}>
+                        ⚠ Está entrando flujo agresivo EN CONTRA de tu venta.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="muted" style={{ fontSize: "0.78em", marginTop: 8 }}>{monitor.note}</div>
           </section>
         )}
 
