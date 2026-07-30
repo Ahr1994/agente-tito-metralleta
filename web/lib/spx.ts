@@ -222,7 +222,8 @@ export function spxDailySigmaPct(iv: number): number {
 export interface SpxExtreme {
   side: "put" | "call";
   spread: Spread; // reusa premiumSell.Spread (crédito/máx-pérdida/BE/R-R/ProbOTM)
-  anchor: "wall" | "sigma" | "delta"; // qué restricción mandó al elegir el short
+  anchor: "wall" | "sigma" | "delta" | "credit"; // qué restricción mandó al elegir el short
+  shortDelta: number | null; // |delta| del short (lo que el usuario verifica al vender por prima)
   wall: number | null; // muro de GEX de referencia de ese lado
   breakevenWinPct: number; // % de aciertos que necesita para EV=0 (asume máx pérdida siempre = pesimista)
   evMargin: number; // ProbOTM − breakevenWinPct (puntos). >0 no-negativo; −1 es al filo, −20 es malo
@@ -281,17 +282,62 @@ function pickSafeShort(
 }
 
 /**
+ * Modo "prima objetivo" (como opera el usuario): entre los spreads de `width` puntos, elige el
+ * que cae en la banda de crédito [min, max] y queda **más cerca del muro de GEX** (el más
+ * defendible). Sin muro, toma el más externo de la banda. Devuelve el short + de qué banda salió.
+ */
+function pickByCredit(
+  sideQuotes: SpxQuote[],
+  side: "put" | "call",
+  spot: number,
+  wall: number | null,
+  width: number,
+  creditMin: number,
+  creditMax: number,
+): { strike: number; anchor: "wall" | "credit" } | null {
+  const isPut = side === "put";
+  const byK = new Map<number, number>(); // strike → precio
+  for (const q of sideQuotes) byK.set(q.strike, q.price);
+  const strikes = [...byK.keys()]
+    .filter((k) => (isPut ? k < spot : k > spot))
+    .sort((a, b) => (isPut ? b - a : a - b)); // del menos al más externo
+
+  const inBand: number[] = [];
+  for (const k of strikes) {
+    const short = byK.get(k);
+    const long = byK.get(isPut ? k - width : k + width);
+    if (short == null || long == null) continue;
+    const credit = short - long;
+    if (credit >= creditMin && credit <= creditMax) inBand.push(k);
+  }
+  if (inBand.length === 0) return null;
+
+  if (wall != null) {
+    const chosen = inBand.reduce((a, b) => (Math.abs(b - wall) < Math.abs(a - wall) ? b : a));
+    return { strike: chosen, anchor: Math.abs(chosen - wall) / wall <= 0.01 ? "wall" : "credit" };
+  }
+  return { strike: inBand[inBand.length - 1], anchor: "credit" }; // el más externo de la banda
+}
+
+/**
  * Extremos safe para vender prima en 0DTE/1DTE. Ancla el short a los **muros de GEX** (donde
  * el dealer pinnea) además de σ y delta, arma el credit spread (reusa `buildSpread`), aplica
  * el **filtro de EV** (win% para breakeven vs ProbOTM) y marca el lado que sugiere el flujo.
- * `quotes` = un solo DTE. Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
+ * Con `opts.credit` cambia al **modo prima objetivo**: elige por banda de crédito (como opera
+ * el usuario) en vez de por delta. `quotes` = un solo DTE.
+ * Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
  */
 export function spxSafeExtremes(
   quotes: SpxQuote[],
   spot: number,
   gex: SpxGex,
   bias: SpxFlowBias,
-  opts: { maxDelta?: number; sigmaMult?: number; width?: number } = {},
+  opts: {
+    maxDelta?: number;
+    sigmaMult?: number;
+    width?: number;
+    credit?: { min: number; max: number }; // modo prima objetivo (crédito por acción)
+  } = {},
 ): SpxSafeSetup {
   const maxDelta = opts.maxDelta ?? 0.25; // tope de |delta| del short (no vender más cerca)
   const sigmaMult = opts.sigmaMult ?? 1;
@@ -310,11 +356,15 @@ export function spxSafeExtremes(
 
   const extremes: SpxExtreme[] = [];
   for (const side of ["put", "call"] as const) {
+    const sideQuotes = quotes.filter((q) => q.type === side);
     const wall = side === "put" ? gex.putWall : gex.callWall;
-    const pick = pickSafeShort(quotes.filter((q) => q.type === side), side, spot, wall, sigmaAbs, maxDelta);
+    const pick = opts.credit
+      ? pickByCredit(sideQuotes, side, spot, wall, width, opts.credit.min, opts.credit.max)
+      : pickSafeShort(sideQuotes, side, spot, wall, sigmaAbs, maxDelta);
     if (!pick) continue;
     const spread = buildSpread(side === "put" ? "bull_put" : "bear_call", oq, pick.strike, width, walls);
     if (!spread) continue;
+    const shortDelta = sideQuotes.find((q) => q.strike === pick.strike)?.delta ?? null;
     const risk = spread.maxLoss;
     const reward = spread.credit * 100;
     const breakevenWinPct = risk + reward > 0 ? Math.round((risk / (risk + reward)) * 100) : 100;
@@ -323,6 +373,7 @@ export function spxSafeExtremes(
       side,
       spread,
       anchor: pick.anchor,
+      shortDelta: shortDelta != null ? Math.abs(shortDelta) : null,
       wall,
       breakevenWinPct,
       evMargin,

@@ -48,11 +48,14 @@ function ExtremeCard({
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, fontSize: "0.92em" }}>
         <span>Crédito: <b>${(s.credit * 100).toFixed(0)}</b></span>
+        <span>Delta: <b>{ex.shortDelta != null ? ex.shortDelta.toFixed(2) : "—"}</b></span>
         <span>Máx pérdida: <b>${s.maxLoss}</b></span>
-        <span>R/R: <b>{s.riskReward}</b></span>
         <span>ProbOTM: <b>{s.probOTM}%</b></span>
+        <span>R/R: <b>{s.riskReward}</b></span>
         <span className="muted">BE-win: {ex.breakevenWinPct}%</span>
-        <span className="muted">Ancla: {ex.anchor === "wall" ? "muro GEX" : ex.anchor}</span>
+        <span className="muted">
+          Ancla: {ex.anchor === "wall" ? "muro GEX" : ex.anchor === "credit" ? "prima" : ex.anchor}
+        </span>
       </div>
       <button
         className="rescan"
@@ -153,12 +156,19 @@ export default function SpxPage() {
   const [dte, setDte] = useState<0 | 1>(0);
   const [trades, setTrades] = useState<SpxTrade[]>([]);
   const [flash, setFlash] = useState<string | null>(null);
+  const [mode, setMode] = useState<"delta" | "prima">("prima");
+  const [cMin, setCMin] = useState(70);
+  const [cMax, setCMax] = useState(100);
 
   const load = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/spx", { cache: "no-store" });
+      const qs =
+        mode === "prima"
+          ? `?width=5&creditMin=${(cMin / 100).toFixed(2)}&creditMax=${(cMax / 100).toFixed(2)}`
+          : "?width=5";
+      const res = await fetch(`/api/spx${qs}`, { cache: "no-store" });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Error");
       setData(json as SpxAnalysis);
@@ -167,7 +177,7 @@ export default function SpxPage() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [mode, cMin, cMax]);
 
   const loadTrades = useCallback(async () => {
     try {
@@ -271,6 +281,50 @@ export default function SpxPage() {
             {busy ? "Cargando…" : "↻ Actualizar"}
           </button>
         </div>
+
+        <section className="scorecard" style={{ padding: "10px 12px", marginBottom: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+            <b style={{ fontSize: "0.9em" }}>Elegir extremos por:</b>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["prima", "delta"] as const).map((m) => (
+                <button
+                  key={m}
+                  className="rescan"
+                  style={{ background: mode === m ? "#101828" : undefined, color: mode === m ? "#fff" : undefined }}
+                  onClick={() => setMode(m)}
+                >
+                  {m === "prima" ? "💵 Prima objetivo" : "📐 Delta (muro GEX)"}
+                </button>
+              ))}
+            </div>
+            {mode === "prima" && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: "0.9em" }}>
+                <span className="muted">Prima $</span>
+                <input
+                  type="number"
+                  value={cMin}
+                  onChange={(e) => setCMin(Number(e.target.value))}
+                  style={{ width: 60, padding: "4px 6px", border: "1px solid #d0d5dd", borderRadius: 6 }}
+                />
+                <span className="muted">a $</span>
+                <input
+                  type="number"
+                  value={cMax}
+                  onChange={(e) => setCMax(Number(e.target.value))}
+                  style={{ width: 60, padding: "4px 6px", border: "1px solid #d0d5dd", borderRadius: 6 }}
+                />
+                <button className="rescan" onClick={load} disabled={busy}>
+                  Aplicar
+                </button>
+              </div>
+            )}
+          </div>
+          <div className="muted" style={{ fontSize: "0.8em", marginTop: 6 }}>
+            {mode === "prima"
+              ? "Modo como operas tú: busca el spread de 5 puntos que cobra esa prima y queda más cerca del muro de gamma. Te muestra el delta que te toca."
+              : "Ancla el short al muro de GEX con tope de delta 0.25 (la cola más defendible)."}
+          </div>
+        </section>
 
         {flash && (
           <section className="scorecard" style={{ color: "#12b76a", padding: "8px 12px" }}>✓ {flash}</section>

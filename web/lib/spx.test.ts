@@ -206,6 +206,19 @@ describe("spxSafeExtremes — Fase 3", () => {
     expect(typeof put!.evOk).toBe("boolean");
   });
 
+  it("modo prima: elige el spread por banda de crédito y reporta el delta del short", () => {
+    const bias: SpxFlowBias = { bullishPremium: 1, bearishPremium: 1, netPct: 0, lean: "neutral", sellSide: "either" };
+    // puts width-5 disponibles: 7300/7295 = 4−2.5 = $150 ; 7295/7290 = 2.5−1.5 = $100
+    const s = spxSafeExtremes(chain(), 7350, gex, bias, { width: 5, credit: { min: 0.9, max: 1.6 } });
+    const put = s.extremes.find((e) => e.side === "put");
+    expect(put).toBeTruthy();
+    const creditDollars = put!.spread.credit * 100;
+    expect(creditDollars).toBeGreaterThanOrEqual(90);
+    expect(creditDollars).toBeLessThanOrEqual(160);
+    expect(put!.shortDelta).not.toBeNull();
+    expect(["wall", "credit"]).toContain(put!.anchor);
+  });
+
   it("marca recommended según el lado que sugiere el flujo", () => {
     const bullish: SpxFlowBias = { bullishPremium: 3, bearishPremium: 1, netPct: 50, lean: "bullish", sellSide: "put" };
     const s = spxSafeExtremes(chain(), 7350, gex, bullish, {});

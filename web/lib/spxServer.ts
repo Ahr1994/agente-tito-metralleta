@@ -35,9 +35,13 @@ export interface SpxAnalysis {
   generatedAt: string;
 }
 
-export async function computeSpx(opts: { width?: number } = {}): Promise<SpxAnalysis> {
+export async function computeSpx(
+  opts: { width?: number; maxDelta?: number; credit?: { min: number; max: number } } = {},
+): Promise<SpxAnalysis> {
   const now = new Date();
   const width = opts.width ?? 5;
+  const maxDelta = opts.maxDelta;
+  const credit = opts.credit;
 
   const { quotes } = await fetchSpxChain();
   const spot = deriveSpxSpot(quotes);
@@ -66,7 +70,7 @@ export async function computeSpx(opts: { width?: number } = {}): Promise<SpxAnal
     if (!spot || set.length === 0) return null;
     const gex = spxGex(set, spot);
     const bias = flowBias(flowTrades.filter((t) => t.expiration === exp));
-    const setup = spxSafeExtremes(set, spot, gex, bias, { width });
+    const setup = spxSafeExtremes(set, spot, gex, bias, { width, maxDelta, credit });
     return { dte, expiration: exp, contracts: set.length, setup };
   };
 

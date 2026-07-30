@@ -9,8 +9,12 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const width = Number(searchParams.get("width")) || undefined;
+  const maxDelta = Number(searchParams.get("maxDelta")) || undefined;
+  const cMin = Number(searchParams.get("creditMin"));
+  const cMax = Number(searchParams.get("creditMax"));
+  const credit = cMin > 0 && cMax >= cMin ? { min: cMin, max: cMax } : undefined;
   try {
-    const result = await computeSpx({ width });
+    const result = await computeSpx({ width, maxDelta, credit });
     return Response.json(result);
   } catch (e) {
     const message = e instanceof Error ? e.message : "No se pudo analizar el SPX.";
