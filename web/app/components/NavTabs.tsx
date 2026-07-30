@@ -11,6 +11,7 @@ const TABS = [
   { href: "/ideas", label: "Ideas", icon: "💡" },
   { href: "/wheel", label: "Wheel", icon: "🎡" },
   { href: "/earnings", label: "Earnings", icon: "📅" },
+  { href: "/spx", label: "SPX 0DTE", icon: "📊" },
   { href: "/flow", label: "Time & Sales", icon: "⚡" },
 ];
 
