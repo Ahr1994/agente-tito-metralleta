@@ -30,6 +30,7 @@ export interface FetchFlowOptions {
   maxPages?: number;
   minPremium?: number; // filtro server-side: solo trades con premium ≥ este valor ($)
   targetDays?: number; // detener la paginación al cubrir N días hacia atrás
+  timeoutMs?: number; // timeout por request; si MarketSnack anda lento, falla rápido (default 8s)
   onPage?: (page: number, accumulated: number) => void | Promise<void>;
 }
 
@@ -81,6 +82,7 @@ async function paginate(
   const clean = symbol;
   const period = opts.period ?? "5d";
   const maxPages = opts.maxPages ?? 10;
+  const timeoutMs = opts.timeoutMs ?? 8000;
   const cookieHeader = cookie();
 
   const trades: RawTrade[] = [];
@@ -103,11 +105,26 @@ async function paginate(
     if (token) params.set("next_page_token", token);
     const url = `${BASE_URL}/api/flow_feed?${params.toString()}`;
 
-    const res = await fetch(url, {
-      headers: { Accept: "application/json", Cookie: cookieHeader },
-      cache: "no-store",
-      redirect: "manual",
-    });
+    // Timeout por request: si MarketSnack anda lento/degradado, abortamos y el llamador cae
+    // a flujo neutral (el GEX se calcula igual desde Massive). Ver docs del módulo SPX.
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { Accept: "application/json", Cookie: cookieHeader },
+        cache: "no-store",
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "TimeoutError") {
+        throw new MarketSnackError(
+          `MarketSnack no respondió en ${timeoutMs / 1000}s (servidor lento). Se sigue sin flujo.`,
+        );
+      }
+      throw new MarketSnackError(
+        `No se pudo conectar con MarketSnack: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
 
     // Sesión inválida/expirada → MarketSnack redirige a /login o responde 401.
     if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
