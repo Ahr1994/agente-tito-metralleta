@@ -9,8 +9,22 @@ import type {
   SpxWallBacktestResult,
   SpxClosingFlowResult,
   SpxMonitorResult,
+  SpxTapeResult,
 } from "@/lib/spxServer";
 import type { MonitorAction } from "@/lib/positionMonitor";
+
+const etTime = (iso: string) => {
+  try {
+    return new Date(iso).toLocaleTimeString("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+};
 
 const ACTION_STYLE: Record<MonitorAction, { color: string; bg: string; label: string }> = {
   hold: { color: "#12b76a", bg: "#ecfdf3", label: "AGUANTA" },
@@ -214,6 +228,8 @@ export default function SpxPage() {
   const [closing, setClosing] = useState<SpxClosingFlowResult | null>(null);
   const [monitor, setMonitor] = useState<SpxMonitorResult | null>(null);
   const [monitorAt, setMonitorAt] = useState<number | null>(null);
+  const [tape, setTape] = useState<SpxTapeResult | null>(null);
+  const [tapeAt, setTapeAt] = useState<number | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -282,13 +298,35 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadTape = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-tape", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) {
+        setTape(json as SpxTapeResult);
+        setTapeAt(Date.now());
+      }
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
     loadBacktest();
     loadClosing();
     loadMonitor();
-  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor]);
+    loadTape();
+  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape]);
+
+  // Tape institucional en vivo: refresco cada 45s si la pestaña está visible.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") loadTape();
+    }, 45_000);
+    return () => clearInterval(id);
+  }, [loadTape]);
 
   // Auto-refresh del monitor cada 60s mientras haya posiciones abiertas y la pestaña esté visible.
   useEffect(() => {
@@ -537,6 +575,72 @@ export default function SpxPage() {
           data && !busy && (
             <div className="muted">No hay cadena para {dte}DTE ahora mismo (mercado cerrado o sin vencimiento).</div>
           )
+        )}
+
+        {tape && (
+          <section className="scorecard" style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <b>🏦 Tape institucional SPX</b>
+              <span className="muted" style={{ fontSize: "0.78em" }}>
+                <span style={{ color: "#12b76a" }}>●</span> live
+                {tapeAt && ` · ${Math.round((Date.now() - tapeAt) / 1000)}s` } · auto 45s
+              </span>
+            </div>
+            <div className="muted" style={{ fontSize: "0.82em", marginTop: 2 }}>
+              Prints grandes (≥${(tape.minPremium / 1000).toFixed(0)}K) que alimentan la foto de gamma.
+            </div>
+            {tape.flowError ? (
+              <div style={{ color: "#b54708", fontSize: "0.85em", marginTop: 8 }}>⚠ Flujo no disponible ({tape.flowError})</div>
+            ) : tape.tape.prints.length === 0 ? (
+              <div className="muted" style={{ marginTop: 8 }}>Sin prints institucionales por ahora.</div>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 16, margin: "10px 0", flexWrap: "wrap" }}>
+                  <span>Premium capturado: <b>${(tape.tape.premiumTotal / 1e6).toFixed(0)}M</b> <span className="muted">({tape.tape.count} prints)</span></span>
+                  <span>
+                    Sesgo:{" "}
+                    <b style={{ color: tape.tape.lean === "bullish" ? "#12b76a" : tape.tape.lean === "bearish" ? "#f04438" : "#667085" }}>
+                      {tape.tape.lean}
+                    </b>{" "}
+                    <span className="muted">(${(tape.tape.bullishPremium / 1e6).toFixed(0)}M alcista / ${(tape.tape.bearishPremium / 1e6).toFixed(0)}M bajista)</span>
+                  </span>
+                </div>
+                <div style={{ maxHeight: 340, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                  {tape.tape.prints.map((p, i) => {
+                    const buy = p.side === "Buy" || p.side === "Aggr.Buy";
+                    const sideColor = buy ? "#12b76a" : p.side === "Mid" ? "#667085" : "#f04438";
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          borderLeft: `4px solid ${p.bullish ? "#12b76a" : "#f04438"}`,
+                          background: "#f9fafb",
+                          borderRadius: 6,
+                          padding: "6px 10px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 8,
+                          fontSize: "0.88em",
+                        }}
+                      >
+                        <span>
+                          <b>{p.strike}{p.type === "put" ? "P" : "C"}</b>{" "}
+                          <span style={{ color: sideColor, fontWeight: 700 }}>{p.side}</span>{" "}
+                          <span className="muted">· {p.cond}</span>
+                        </span>
+                        <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                          <b>${p.premium >= 1e6 ? `${(p.premium / 1e6).toFixed(1)}M` : `${(p.premium / 1e3).toFixed(0)}K`}</b>
+                          <span className="muted">×{p.size}</span>
+                          <span className="muted" style={{ fontSize: "0.85em" }}>{etTime(p.timestamp)}</span>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </section>
         )}
 
         {data && data.news.length > 0 && (

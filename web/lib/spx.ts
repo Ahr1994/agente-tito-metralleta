@@ -135,9 +135,12 @@ export interface SpxFlowTrade {
   type: "call" | "put";
   expiration: string; // YYYY-MM-DD
   side: "ask" | "bid" | "mid" | "unknown"; // agresividad: ask = comprado, bid = vendido
+  rawSide: string; // side crudo de MarketSnack (ABOVE_ASK/AT_ASK/…) para la tape institucional
   premium: number;
   size: number; // contratos
   oi: number; // open interest reportado al momento del trade (EOD del día anterior)
+  assetPrice: number | null; // spot del subyacente al momento del print
+  conditionId: number | null; // condición OPRA (single vs multi leg)
   timestamp: string; // ISO
   gamma: number | null;
   delta: number | null;
@@ -161,9 +164,12 @@ export function parseSpxFlow(raw: RawTrade[]): SpxFlowTrade[] {
       type: occ.type,
       expiration: occ.expiration,
       side: aggressionOf(t.side),
+      rawSide: t.side ?? "",
       premium: t.premium ?? 0,
       size: t.size ?? 0,
       oi: t.open_interest ?? 0,
+      assetPrice: t.asset_price ?? null,
+      conditionId: t.trade_condition_id ?? null,
       timestamp: t.timestamp ?? "",
       gamma: t.gamma ?? null,
       delta: t.delta ?? null,

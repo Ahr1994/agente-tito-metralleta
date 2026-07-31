@@ -35,6 +35,7 @@ import {
 } from "./closingFlow";
 import { loadCloseFlow, saveCloseFlow, priorSession } from "./spxCloseFlowStore";
 import { monitorPosition, type PositionStatus, type PositionMarket } from "./positionMonitor";
+import { institutionalTape, type InstitutionalTape } from "./institutionalTape";
 
 export interface SpxDteSetup {
   dte: 0 | 1;
@@ -313,5 +314,37 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     spot,
     generatedAt: now.toISOString(),
     note: "Monitorea tus spreads guardados (⭐) que aún no vencen. Flujo en contra = compras agresivas del lado opuesto a tu venta.",
+  };
+}
+
+export interface SpxTapeResult {
+  tape: InstitutionalTape;
+  minPremium: number;
+  flowError: string | null;
+  generatedAt: string;
+}
+
+/**
+ * Tape institucional del SPX (idéntica a la de la vista GEX de MarketSnack): los prints grandes
+ * del día. Usa el filtro server-side `minPremium` para traer solo lo institucional en pocas
+ * páginas. Pensado para pollear en vivo durante la sesión.
+ */
+export async function spxInstitutionalTape(
+  opts: { minPremium?: number } = {},
+  now: Date = new Date(),
+): Promise<SpxTapeResult> {
+  const minPremium = opts.minPremium ?? 100_000;
+  let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  let flowError: string | null = null;
+  try {
+    flowTrades = (await fetchSpxFlow({ period: "1d", minPremium, maxPages: 12 })).trades;
+  } catch (e) {
+    flowError = e instanceof Error ? e.message : "No se pudo leer el flujo de MarketSnack.";
+  }
+  return {
+    tape: institutionalTape(flowTrades, { minPremium }),
+    minPremium,
+    flowError,
+    generatedAt: now.toISOString(),
   };
 }

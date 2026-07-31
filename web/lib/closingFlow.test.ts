@@ -12,9 +12,12 @@ function ft(over: Partial<SpxFlowTrade> = {}): SpxFlowTrade {
     type: "put",
     expiration: "2026-07-31", // 1DTE
     side: "bid", // venta
+    rawSide: "BIDSIDE",
     premium: 300_000,
     size: 500,
     oi: 1000,
+    assetPrice: null,
+    conditionId: null,
     timestamp: "2026-07-30T19:45:00Z",
     gamma: null,
     delta: null,
