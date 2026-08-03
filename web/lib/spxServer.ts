@@ -47,6 +47,7 @@ import {
 import { loadCloseFlow, saveCloseFlow, priorSession } from "./spxCloseFlowStore";
 import { monitorPosition, type PositionStatus, type PositionMarket } from "./positionMonitor";
 import { institutionalTape, type InstitutionalTape } from "./institutionalTape";
+import { closingMomentumSignal, aggressiveFlow } from "./closingMomentum";
 
 export interface SpxDteSetup {
   dte: 0 | 1;
@@ -417,4 +418,47 @@ export async function spxMag7(now: Date = new Date()): Promise<SpxMag7Result> {
     MAG7.map((ticker) => ({ ticker, price: null, changePct: null })),
   );
   return { breadth: mag7Breadth(changes), generatedAt: now.toISOString() };
+}
+
+export interface SpxMomentumResult {
+  signal: ReturnType<typeof closingMomentumSignal>;
+  aggFlow: ReturnType<typeof aggressiveFlow>;
+  spot: number | null;
+  spotSource: "index" | "derived";
+  generatedAt: string;
+  flowError: string | null;
+}
+
+/**
+ * Módulo DIRECCIONAL de cierre: en las últimas 2h, cruza el GEX oficial de MarketSnack
+ * (régimen/muros/flip) con el flujo AGRESIVO reciente para señalar un move direccional con
+ * target. La otra cara de vender prima — para días sin edge de prima pero con move armándose.
+ */
+export async function spxMomentum(now: Date = new Date()): Promise<SpxMomentumResult> {
+  const [index, msGex] = await Promise.all([fetchSpxIndex(), fetchSpxMsGex()]);
+  let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  let flowError: string | null = null;
+  try {
+    flowTrades = (await fetchSpxFlow({ maxPages: 6 })).trades;
+  } catch (e) {
+    flowError = e instanceof Error ? e.message : "No se pudo leer el flujo de MarketSnack.";
+  }
+
+  const spot = index?.price ?? deriveSpxSpot((await fetchSpxChain().catch(() => ({ quotes: [] }))).quotes);
+  const spotSource: "index" | "derived" = index?.price != null ? "index" : "derived";
+
+  const aggFlow = aggressiveFlow(flowTrades, now, 30);
+  const signal = closingMomentumSignal({
+    now,
+    spot: spot ?? 0,
+    netGex: msGex?.netGex ?? null,
+    gammaFlip: msGex?.gammaFlip ?? null,
+    callWall: msGex?.callWall ?? null,
+    putWall: msGex?.putWall ?? null,
+    magnet: msGex?.magnet ?? null,
+    aggBullPremium: aggFlow.aggBullPremium,
+    aggBearPremium: aggFlow.aggBearPremium,
+  });
+
+  return { signal, aggFlow, spot, spotSource, generatedAt: now.toISOString(), flowError };
 }

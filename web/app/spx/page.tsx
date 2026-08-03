@@ -11,6 +11,7 @@ import type {
   SpxMonitorResult,
   SpxTapeResult,
   SpxMag7Result,
+  SpxMomentumResult,
 } from "@/lib/spxServer";
 import type { MonitorAction } from "@/lib/positionMonitor";
 import type { Mag7Lean } from "@/lib/mag7";
@@ -241,6 +242,7 @@ export default function SpxPage() {
   const [tape, setTape] = useState<SpxTapeResult | null>(null);
   const [tapeAt, setTapeAt] = useState<number | null>(null);
   const [mag7, setMag7] = useState<SpxMag7Result | null>(null);
+  const [momentum, setMomentum] = useState<SpxMomentumResult | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -343,15 +345,27 @@ export default function SpxPage() {
   }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape, loadMag7]);
 
   // Tape institucional + Mag 7 en vivo: refresco cada 45-60s si la pestaña está visible.
+  const loadMomentum = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-momentum", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) setMomentum(json as SpxMomentumResult);
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
+    loadMomentum();
     const id = setInterval(() => {
       if (document.visibilityState === "visible") {
         loadTape();
         loadMag7();
+        loadMomentum();
       }
     }, 45_000);
     return () => clearInterval(id);
-  }, [loadTape, loadMag7]);
+  }, [loadTape, loadMag7, loadMomentum]);
 
   // Auto-refresh del monitor cada 60s mientras haya posiciones abiertas y la pestaña esté visible.
   useEffect(() => {
@@ -451,6 +465,45 @@ export default function SpxPage() {
             </div>
           </section>
         )}
+
+        {momentum && (() => {
+          const s = momentum.signal;
+          const col = s.setup === "none" ? "#667085" : s.bias === "long" ? "#12b76a" : "#f04438";
+          return (
+            <section
+              className="scorecard"
+              style={{
+                marginTop: 12,
+                borderLeft: `5px solid ${col}`,
+                background: s.setup !== "none" ? `${col}12` : undefined,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                <b style={{ color: col }}>🚀 Direccional de cierre: {s.headline}</b>
+                <span className="muted" style={{ fontSize: "0.78em" }}>
+                  {s.minutesToClose != null ? `${s.minutesToClose} min al cierre` : "mercado cerrado"} · auto 45s
+                </span>
+              </div>
+              {s.setup !== "none" ? (
+                <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 8, fontSize: "0.9em" }}>
+                    <span>Dirección: <b style={{ color: col }}>{s.bias === "long" ? "📈 LONG" : "📉 SHORT"}</b></span>
+                    <span>Target: <b>{s.target}</b> {s.targetPts != null && <span className="muted">({s.targetPts} pts)</span>}</span>
+                    <span>Convicción: <b>{s.conviction}/100</b></span>
+                    <span className="muted">gamma {s.regime === "negative" ? "γ− (amplifica)" : "γ+ (breakout)"}</span>
+                  </div>
+                  <div className="muted" style={{ fontSize: "0.82em", marginTop: 6 }}>{s.reasons.join(" · ")}</div>
+                </>
+              ) : (
+                <div className="muted" style={{ fontSize: "0.85em", marginTop: 6 }}>
+                  {s.active
+                    ? `En ventana, sin move armándose (gamma ${s.regime}, flujo agresivo ${s.flowNetPct >= 0 ? "+" : ""}${s.flowNetPct}%). Para días sin edge de prima.`
+                    : "La ventana direccional abre en las últimas 2h (2:00 PM ET). Para cuando NO haya edge de venta de prima."}
+                </div>
+              )}
+            </section>
+          );
+        })()}
 
         {mag7 && (
           <section
