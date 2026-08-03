@@ -4,7 +4,14 @@
 
 import { fetchSpxChain, fetchDailyBars, fetchCompany, fetchStockChanges } from "./massive";
 import { mag7Breadth, MAG7, type Mag7Breadth } from "./mag7";
-import { fetchSpxFlow, fetchSpxIndex, fetchSpxMsGex, fetchSpxSentiment, type MsGexSnapshot } from "./marketsnack";
+import {
+  fetchSpxFlow,
+  fetchSpxIndex,
+  fetchSpxMsGex,
+  fetchSpxSentiment,
+  fetchSpxChainMs,
+  type MsGexSnapshot,
+} from "./marketsnack";
 import type { SpxDaySentiment } from "./spx";
 import { marketDateStr } from "./occ";
 import { loadSpxTrades, type SpxTrade } from "./spxTradeStore";
@@ -54,6 +61,7 @@ export interface SpxAnalysis {
   indexDelayed: boolean; // true si MarketSnack marca el precio como retrasado
   msGex: MsGexSnapshot | null; // GEX oficial de MarketSnack (muros, max pain, flip)
   daySentiment: SpxDaySentiment | null; // sentiment del día (premium calls/puts comprado/vendido)
+  chainSource: "marketsnack" | "massive"; // fuente de la cadena (IV/greeks reales vs Massive)
   ivRank: SpxIvRank;
   atmIv: number | null; // decimal
   freshness: SpxFreshness; // idea #3: data stale
@@ -73,7 +81,11 @@ export async function computeSpx(
   const maxDelta = opts.maxDelta;
   const credit = opts.credit;
 
-  const { quotes } = await fetchSpxChain();
+  // Cadena PRIMARIA de MarketSnack (IV/greeks reales + bid/ask, misma fuente que índice/GEX);
+  // si falla, cae a la de Massive (I:SPX).
+  const msChain = await fetchSpxChainMs();
+  const { quotes } = msChain ?? (await fetchSpxChain());
+  const chainSource: "marketsnack" | "massive" = msChain ? "marketsnack" : "massive";
   const { zeroDte, oneDte, zeroExp, oneExp } = splitByDte(quotes, now);
 
   // Spot en TIEMPO REAL de MarketSnack (plan Indices) + su GEX oficial + sentiment del día.
@@ -147,6 +159,7 @@ export async function computeSpx(
     indexDelayed: index?.delayed ?? false,
     msGex,
     daySentiment,
+    chainSource,
     ivRank,
     atmIv,
     freshness,

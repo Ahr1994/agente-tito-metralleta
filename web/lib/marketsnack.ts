@@ -284,3 +284,67 @@ export async function fetchSpxSentiment(symbol = "SPX"): Promise<SpxDaySentiment
     return null;
   }
 }
+
+interface MsContract {
+  strike?: number;
+  type?: string;
+  expiration?: string;
+  implied_volatility?: number;
+  open_interest?: number;
+  price?: number;
+  greeks?: { delta?: number; gamma?: number };
+  last_quote?: { bid?: number; ask?: number; mid?: number };
+}
+
+/**
+ * Cadena SPX de MarketSnack (plan Indices) con IV/greeks REALES y bid/ask por strike — misma
+ * fuente que el índice y el GEX. Trae los vencimientos más cercanos (0DTE + 1DTE). Mapea a
+ * SpxQuote usando el MID del quote como precio (mejor que el cierre retrasado de Massive).
+ * Devuelve null si falla → el llamador cae a la cadena de Massive.
+ */
+export async function fetchSpxChainMs(
+  symbol = "SPX",
+  maxExpirations = 3,
+): Promise<{ quotes: import("./spx").SpxQuote[]; expirations: string[] } | null> {
+  try {
+    const exps = await msGet<{ date?: string }[]>(`/assets/${encodeURIComponent(symbol)}/expirations`);
+    const dates = (exps ?? [])
+      .map((e) => e.date)
+      .filter((d): d is string => Boolean(d))
+      .slice(0, maxExpirations);
+    if (dates.length === 0) return null;
+
+    const chains = await Promise.all(
+      dates.map((date) =>
+        msGet<MsContract[]>(
+          `/assets/${encodeURIComponent(symbol)}/option_chain_extended?expiration_date=${date}`,
+        ).catch(() => [] as MsContract[]),
+      ),
+    );
+
+    const quotes: import("./spx").SpxQuote[] = [];
+    for (const chain of chains) {
+      for (const c of chain) {
+        const type = c.type;
+        if ((type !== "call" && type !== "put") || c.strike == null || !c.expiration) continue;
+        const q = c.last_quote;
+        const mid =
+          q?.mid ?? (q?.bid != null && q?.ask != null ? (q.bid + q.ask) / 2 : null);
+        quotes.push({
+          strike: c.strike,
+          type,
+          expiration: c.expiration,
+          price: mid ?? c.price ?? 0,
+          delta: c.greeks?.delta ?? null,
+          gamma: c.greeks?.gamma ?? null,
+          iv: c.implied_volatility ?? null,
+          oi: c.open_interest ?? 0,
+          lastUpdatedMs: null, // MarketSnack real-time
+        });
+      }
+    }
+    return quotes.length ? { quotes, expirations: dates } : null;
+  } catch {
+    return null;
+  }
+}

@@ -418,6 +418,9 @@ export default function SpxPage() {
               <div>
                 <span className="muted" style={{ fontSize: "0.8em" }}>IV ATM</span>{" "}
                 <b>{data.atmIv != null ? `${(data.atmIv * 100).toFixed(1)}%` : "—"}</b>
+                {data.chainSource === "marketsnack" && (
+                  <span style={{ fontSize: "0.7em", color: "#12b76a", marginLeft: 4 }}>real ✅</span>
+                )}
               </div>
               <div>
                 <span className="muted" style={{ fontSize: "0.8em" }}>IV Rank</span>{" "}
