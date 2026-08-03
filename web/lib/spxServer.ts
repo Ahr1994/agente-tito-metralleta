@@ -2,7 +2,8 @@
 // + noticias macro para las dos expiraciones. Solo servidor.
 // Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
 
-import { fetchSpxChain, fetchDailyBars, fetchCompany } from "./massive";
+import { fetchSpxChain, fetchDailyBars, fetchCompany, fetchStockChanges } from "./massive";
+import { mag7Breadth, MAG7, type Mag7Breadth } from "./mag7";
 import { fetchSpxFlow } from "./marketsnack";
 import { marketDateStr } from "./occ";
 import { loadSpxTrades, type SpxTrade } from "./spxTradeStore";
@@ -347,4 +348,20 @@ export async function spxInstitutionalTape(
     flowError,
     generatedAt: now.toISOString(),
   };
+}
+
+export interface SpxMag7Result {
+  breadth: Mag7Breadth;
+  generatedAt: string;
+}
+
+/**
+ * Monitor de las 7 Magníficas: su dirección conjunta como termómetro de a dónde va el mercado
+ * (pesan ~30-35% del SPX). Aviso accionable para el vendedor de prima. Pensado para pollear.
+ */
+export async function spxMag7(now: Date = new Date()): Promise<SpxMag7Result> {
+  const changes = await fetchStockChanges([...MAG7]).catch(() =>
+    MAG7.map((ticker) => ({ ticker, price: null, changePct: null })),
+  );
+  return { breadth: mag7Breadth(changes), generatedAt: now.toISOString() };
 }

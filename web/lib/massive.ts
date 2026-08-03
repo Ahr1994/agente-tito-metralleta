@@ -141,6 +141,33 @@ async function getJson<T>(path: string): Promise<T | null> {
   return (await res.json()) as T;
 }
 
+export interface StockChange {
+  ticker: string;
+  price: number | null;
+  changePct: number | null;
+}
+
+/**
+ * Snapshot de varios tickers en UNA llamada (para el monitor de las 7 Magníficas). Devuelve
+ * precio y % de cambio del día por ticker. Los que no vengan salen con null.
+ */
+export async function fetchStockChanges(tickers: string[]): Promise<StockChange[]> {
+  const clean = tickers.map((t) => t.trim().toUpperCase()).filter(Boolean);
+  if (clean.length === 0) return [];
+  const json = await getJson<{ tickers?: (StockSnapshot & { ticker?: string })[] }>(
+    `/v2/snapshot/locale/us/markets/stocks/tickers?tickers=${clean.join(",")}`,
+  ).catch(() => null);
+  const byTicker = new Map((json?.tickers ?? []).map((t) => [t.ticker, t]));
+  return clean.map((ticker) => {
+    const t = byTicker.get(ticker);
+    return {
+      ticker,
+      price: t?.day?.c || t?.min?.c || t?.prevDay?.c || null,
+      changePct: t?.todaysChangePerc ?? null,
+    };
+  });
+}
+
 /** Detalles de referencia + snapshot de precio, combinados en CompanyInfo. */
 export async function fetchCompany(ticker: string): Promise<CompanyInfo> {
   const clean = ticker.trim().toUpperCase();

@@ -10,8 +10,18 @@ import type {
   SpxClosingFlowResult,
   SpxMonitorResult,
   SpxTapeResult,
+  SpxMag7Result,
 } from "@/lib/spxServer";
 import type { MonitorAction } from "@/lib/positionMonitor";
+import type { Mag7Lean } from "@/lib/mag7";
+
+const MAG7_COLOR: Record<Mag7Lean, string> = {
+  strong_bullish: "#12b76a",
+  bullish: "#12b76a",
+  neutral: "#667085",
+  bearish: "#f04438",
+  strong_bearish: "#f04438",
+};
 
 const etTime = (iso: string) => {
   try {
@@ -230,6 +240,7 @@ export default function SpxPage() {
   const [monitorAt, setMonitorAt] = useState<number | null>(null);
   const [tape, setTape] = useState<SpxTapeResult | null>(null);
   const [tapeAt, setTapeAt] = useState<number | null>(null);
+  const [mag7, setMag7] = useState<SpxMag7Result | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
   const [mode, setMode] = useState<"delta" | "prima">("prima");
   const [cMin, setCMin] = useState(70);
@@ -311,6 +322,16 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadMag7 = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-mag7", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) setMag7(json as SpxMag7Result);
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
@@ -318,15 +339,19 @@ export default function SpxPage() {
     loadClosing();
     loadMonitor();
     loadTape();
-  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape]);
+    loadMag7();
+  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape, loadMag7]);
 
-  // Tape institucional en vivo: refresco cada 45s si la pestaña está visible.
+  // Tape institucional + Mag 7 en vivo: refresco cada 45-60s si la pestaña está visible.
   useEffect(() => {
     const id = setInterval(() => {
-      if (document.visibilityState === "visible") loadTape();
+      if (document.visibilityState === "visible") {
+        loadTape();
+        loadMag7();
+      }
     }, 45_000);
     return () => clearInterval(id);
-  }, [loadTape]);
+  }, [loadTape, loadMag7]);
 
   // Auto-refresh del monitor cada 60s mientras haya posiciones abiertas y la pestaña esté visible.
   useEffect(() => {
@@ -419,6 +444,40 @@ export default function SpxPage() {
             <div className="muted" style={{ fontSize: "0.85em", marginTop: 4 }}>
               {data.edge.reasons.join(" · ")}
             </div>
+          </section>
+        )}
+
+        {mag7 && (
+          <section
+            className="scorecard"
+            style={{
+              marginTop: 12,
+              borderLeft: `5px solid ${MAG7_COLOR[mag7.breadth.lean]}`,
+              background: mag7.breadth.warning ? `${MAG7_COLOR[mag7.breadth.lean]}12` : undefined,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <b style={{ color: MAG7_COLOR[mag7.breadth.lean] }}>🧲 7 Magníficas: {mag7.breadth.headline}</b>
+              <span className="muted" style={{ fontSize: "0.8em" }}>
+                {mag7.breadth.upCount}↑ / {mag7.breadth.downCount}↓ · prom {mag7.breadth.avgChangePct >= 0 ? "+" : ""}{mag7.breadth.avgChangePct}% · ● auto 60s
+              </span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+              {mag7.breadth.stocks.map((s) => {
+                const up = s.changePct != null && s.changePct > 0;
+                const col = s.changePct == null ? "#98a2b3" : up ? "#12b76a" : "#f04438";
+                return (
+                  <span key={s.ticker} style={{ padding: "3px 8px", borderRadius: 6, background: `${col}18`, color: col, fontWeight: 700, fontSize: "0.85em" }}>
+                    {s.ticker} {s.changePct == null ? "—" : `${up ? "+" : ""}${s.changePct.toFixed(2)}%`}
+                  </span>
+                );
+              })}
+            </div>
+            {mag7.breadth.warning && (
+              <div style={{ color: MAG7_COLOR[mag7.breadth.lean], fontWeight: 700, fontSize: "0.88em", marginTop: 8 }}>
+                ⚠ {mag7.breadth.warning}
+              </div>
+            )}
           </section>
         )}
 
