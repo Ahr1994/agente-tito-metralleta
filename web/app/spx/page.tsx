@@ -502,8 +502,17 @@ export default function SpxPage() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <b>🎯 Monitor de posiciones abiertas</b>
               <span className="muted" style={{ fontSize: "0.78em" }}>
+                {monitor.spot != null && (
+                  <>
+                    spot{" "}
+                    <b style={{ color: monitor.spotSource === "realtime" ? "#12b76a" : "#b54708" }}>
+                      ${monitor.spot.toFixed(1)}
+                    </b>{" "}
+                    {monitor.spotSource === "realtime" ? "(tiempo real ✅)" : "(retrasado ⚠)"} ·{" "}
+                  </>
+                )}
                 <span style={{ color: "#f04438" }}>●</span> en vivo
-                {monitorAt && ` · actualizado ${Math.round((Date.now() - monitorAt) / 1000)}s atrás`} · auto 60s
+                {monitorAt && ` · ${Math.round((Date.now() - monitorAt) / 1000)}s` } · auto 60s
               </span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>

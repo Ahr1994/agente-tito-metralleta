@@ -18,6 +18,7 @@ import {
   spxFreshness,
   spxEdgeSignal,
   spxDailySigmaPct,
+  realtimeSpotFromFlow,
   type SpxSafeSetup,
   type SpxFreshness,
   type SpxEdgeSignal,
@@ -254,6 +255,7 @@ export interface SpxMonitorPosition {
 export interface SpxMonitorResult {
   positions: SpxMonitorPosition[]; // tus spreads guardados que aún no vencen
   spot: number | null;
+  spotSource: "realtime" | "derived"; // realtime = tape (fiable) · derived = cadena retrasada
   generatedAt: string;
   note: string;
 }
@@ -268,17 +270,26 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
   const today = marketDateStr(now);
   const open = (await loadSpxTrades()).filter((t) => t.expiration && t.expiration >= today);
   if (open.length === 0) {
-    return { positions: [], spot: null, generatedAt: now.toISOString(), note: "Sin posiciones abiertas. Guarda un spread con ⭐ para monitorearlo." };
+    return { positions: [], spot: null, spotSource: "derived", generatedAt: now.toISOString(), note: "Sin posiciones abiertas. Guarda un spread con ⭐ para monitorearlo." };
   }
 
   const { quotes } = await fetchSpxChain();
-  const spot = deriveSpxSpot(quotes);
+  const derivedSpot = deriveSpxSpot(quotes);
   let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
   try {
-    flowTrades = (await fetchSpxFlow({ maxPages: 4 })).trades; // solo lo reciente
+    flowTrades = (await fetchSpxFlow({ maxPages: 4 })).trades; // lo reciente (para spot real + flujo)
   } catch {
-    /* cookie caducada → seguimos sin flujo */
+    /* cookie caducada → seguimos con el spot derivado */
   }
+
+  // FIX: usar el spot en TIEMPO REAL de la tape (asset_price), no el derivado retrasado, que daba
+  // colchones falsos. Y ajustar los marks de la cadena al spot real por delta (1er orden).
+  const rtSpot = realtimeSpotFromFlow(flowTrades);
+  const spot = rtSpot ?? derivedSpot;
+  const spotSource: "realtime" | "derived" = rtSpot != null ? "realtime" : "derived";
+  const spotGap = rtSpot != null && derivedSpot != null ? rtSpot - derivedSpot : 0;
+  const markToReal = (q: { delta: number | null; price: number } | undefined): number | null =>
+    q == null ? null : Math.max(0, q.price + (q.delta ?? 0) * spotGap);
 
   const positions: SpxMonitorPosition[] = open.map((t) => {
     const exp = t.expiration as string;
@@ -294,8 +305,8 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     const market: PositionMarket = {
       spot: spot ?? 0,
       shortDelta: short?.delta != null ? Math.abs(short.delta) : null,
-      shortMark: short?.price ?? null,
-      longMark: long?.price ?? null,
+      shortMark: markToReal(short),
+      longMark: markToReal(long),
       adversePremium: isPut ? bias.bearishPremium : bias.bullishPremium,
       favorablePremium: isPut ? bias.bullishPremium : bias.bearishPremium,
       flowLean: bias.lean,
@@ -313,8 +324,12 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
   return {
     positions,
     spot,
+    spotSource,
     generatedAt: now.toISOString(),
-    note: "Monitorea tus spreads guardados (⭐) que aún no vencen. Flujo en contra = compras agresivas del lado opuesto a tu venta.",
+    note:
+      spotSource === "realtime"
+        ? "Spot en tiempo real (tape). El P&L es estimado (marks ajustados por delta) — confía en tu broker para el exacto."
+        : "⚠ Spot derivado (retrasado) — sin flujo en vivo. Confía en tu broker para el precio real.",
   };
 }
 

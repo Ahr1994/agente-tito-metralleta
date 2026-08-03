@@ -232,6 +232,22 @@ export function spxDailySigmaPct(iv: number): number {
   return iv * Math.sqrt(1 / 365) * 100;
 }
 
+/**
+ * Spot en TIEMPO REAL desde el flujo: el `assetPrice` del print más reciente. MarketSnack va
+ * casi al segundo; la cadena de Massive va retrasada ~15 min. Se usa para el monitor (que antes
+ * daba colchones falsos por usar el spot derivado retrasado). null si no hay dato.
+ */
+export function realtimeSpotFromFlow(trades: SpxFlowTrade[]): number | null {
+  let best: { ts: number; spot: number } | null = null;
+  for (const t of trades) {
+    if (t.assetPrice == null || !(t.assetPrice > 0)) continue;
+    const ts = Date.parse(t.timestamp);
+    if (!Number.isFinite(ts)) continue;
+    if (!best || ts > best.ts) best = { ts, spot: t.assetPrice };
+  }
+  return best?.spot ?? null;
+}
+
 export interface SpxPositionSize {
   contracts: number; // nº de spreads que caben en el colateral objetivo
   totalCredit: number; // $ de crédito total

@@ -10,6 +10,8 @@ import {
   spxFreshness,
   spxEdgeSignal,
   sizeSpxPosition,
+  realtimeSpotFromFlow,
+  type SpxFlowTrade,
   type SpxQuote,
   type SpxGex,
   type SpxFlowBias,
@@ -250,6 +252,28 @@ describe("sizeSpxPosition — sizing del vendedor (idea #6)", () => {
   it("respeta el tope y evita división por cero", () => {
     expect(sizeSpxPosition(0.5, 100, 100000, 6).contracts).toBe(6); // tope
     expect(sizeSpxPosition(0.5, 0, 2000).contracts).toBe(0); // sin colateral válido
+  });
+});
+
+describe("realtimeSpotFromFlow — spot en tiempo real (fix del monitor)", () => {
+  function ft(assetPrice: number | null, timestamp: string): SpxFlowTrade {
+    return {
+      strike: 7400, type: "call", expiration: "2026-07-31", side: "bid", rawSide: "BIDSIDE",
+      premium: 1, size: 1, oi: 0, assetPrice, conditionId: null, timestamp,
+      gamma: null, delta: null, iv: null,
+    };
+  }
+  it("toma el asset_price del print MÁS reciente", () => {
+    const spot = realtimeSpotFromFlow([
+      ft(7480, "2026-07-31T18:00:00Z"),
+      ft(7488, "2026-07-31T18:05:00Z"), // más reciente
+      ft(7475, "2026-07-31T17:55:00Z"),
+    ]);
+    expect(spot).toBe(7488);
+  });
+  it("ignora prints sin asset_price y devuelve null si no hay ninguno", () => {
+    expect(realtimeSpotFromFlow([ft(null, "2026-07-31T18:00:00Z")])).toBeNull();
+    expect(realtimeSpotFromFlow([])).toBeNull();
   });
 });
 
