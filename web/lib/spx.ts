@@ -136,6 +136,7 @@ export interface SpxFlowTrade {
   expiration: string; // YYYY-MM-DD
   side: "ask" | "bid" | "mid" | "unknown"; // agresividad: ask = comprado, bid = vendido
   rawSide: string; // side crudo de MarketSnack (ABOVE_ASK/AT_ASK/…) para la tape institucional
+  price: number; // precio del contrato por acción (para derivar el spot por paridad)
   premium: number;
   size: number; // contratos
   oi: number; // open interest reportado al momento del trade (EOD del día anterior)
@@ -165,6 +166,7 @@ export function parseSpxFlow(raw: RawTrade[]): SpxFlowTrade[] {
       expiration: occ.expiration,
       side: aggressionOf(t.side),
       rawSide: t.side ?? "",
+      price: t.price ?? 0,
       premium: t.premium ?? 0,
       size: t.size ?? 0,
       oi: t.open_interest ?? 0,
@@ -246,6 +248,44 @@ export function realtimeSpotFromFlow(trades: SpxFlowTrade[]): number | null {
     if (!best || ts > best.ts) best = { ts, spot: t.assetPrice };
   }
   return best?.spot ?? null;
+}
+
+/**
+ * Spot en tiempo real por **paridad put-call sobre el flujo en vivo**, cuando MarketSnack no
+ * trae `asset_price`. Para cada strike/vto con un call y un put operados RECIENTEMENTE (y las
+ * dos patas cercanas en el tiempo), spot ≈ K + C − P. Toma la mediana → robusto al ruido.
+ */
+export function spotFromFlowParity(
+  trades: SpxFlowTrade[],
+  now: Date = new Date(),
+  opts: { windowMin?: number; maxPairGapMin?: number } = {},
+): number | null {
+  const windowMs = (opts.windowMin ?? 15) * 60_000;
+  const maxGapMs = (opts.maxPairGapMin ?? 5) * 60_000;
+  const nowMs = now.getTime();
+
+  type Leg = { price: number; ts: number };
+  const byPair = new Map<string, { strike: number; call?: Leg; put?: Leg }>();
+  for (const t of trades) {
+    if (!(t.price > 0)) continue;
+    const ts = Date.parse(t.timestamp);
+    if (!Number.isFinite(ts) || nowMs - ts > windowMs) continue; // solo lo reciente
+    const key = `${t.strike}|${t.expiration}`;
+    const e = byPair.get(key) ?? { strike: t.strike };
+    const leg: "call" | "put" = t.type === "call" ? "call" : "put";
+    if (!e[leg] || ts > (e[leg] as Leg).ts) e[leg] = { price: t.price, ts };
+    byPair.set(key, e);
+  }
+
+  const spots: number[] = [];
+  for (const { strike, call, put } of byPair.values()) {
+    if (!call || !put) continue;
+    if (Math.abs(call.ts - put.ts) > maxGapMs) continue; // patas muy separadas → descartar
+    spots.push(strike + call.price - put.price);
+  }
+  if (spots.length === 0) return null;
+  spots.sort((a, b) => a - b);
+  return Math.round(spots[Math.floor(spots.length / 2)] * 100) / 100; // mediana
 }
 
 export interface SpxPositionSize {

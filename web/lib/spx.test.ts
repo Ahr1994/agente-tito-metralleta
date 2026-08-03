@@ -11,6 +11,7 @@ import {
   spxEdgeSignal,
   sizeSpxPosition,
   realtimeSpotFromFlow,
+  spotFromFlowParity,
   type SpxFlowTrade,
   type SpxQuote,
   type SpxGex,
@@ -259,7 +260,7 @@ describe("realtimeSpotFromFlow — spot en tiempo real (fix del monitor)", () =>
   function ft(assetPrice: number | null, timestamp: string): SpxFlowTrade {
     return {
       strike: 7400, type: "call", expiration: "2026-07-31", side: "bid", rawSide: "BIDSIDE",
-      premium: 1, size: 1, oi: 0, assetPrice, conditionId: null, timestamp,
+      price: 1, premium: 1, size: 1, oi: 0, assetPrice, conditionId: null, timestamp,
       gamma: null, delta: null, iv: null,
     };
   }
@@ -274,6 +275,46 @@ describe("realtimeSpotFromFlow — spot en tiempo real (fix del monitor)", () =>
   it("ignora prints sin asset_price y devuelve null si no hay ninguno", () => {
     expect(realtimeSpotFromFlow([ft(null, "2026-07-31T18:00:00Z")])).toBeNull();
     expect(realtimeSpotFromFlow([])).toBeNull();
+  });
+});
+
+describe("spotFromFlowParity — spot por paridad del flujo (sin asset_price)", () => {
+  function leg(strike: number, type: "call" | "put", price: number, timestamp: string): SpxFlowTrade {
+    return {
+      strike, type, expiration: "2026-07-31", side: "bid", rawSide: "BIDSIDE",
+      price, premium: price * 100, size: 1, oi: 0, assetPrice: null, conditionId: null, timestamp,
+      gamma: null, delta: null, iv: null,
+    };
+  }
+  const now = new Date("2026-07-31T18:00:00Z");
+  it("deriva spot = K + C − P y toma la mediana de varios strikes", () => {
+    const trades = [
+      leg(7500, "call", 40, "2026-07-31T17:59:00Z"),
+      leg(7500, "put", 25, "2026-07-31T17:59:10Z"), // 7500+40-25 = 7515
+      leg(7550, "call", 18, "2026-07-31T17:58:00Z"),
+      leg(7550, "put", 52, "2026-07-31T17:58:05Z"), // 7550+18-52 = 7516
+      leg(7450, "call", 70, "2026-07-31T17:59:30Z"),
+      leg(7450, "put", 8, "2026-07-31T17:59:35Z"), // 7450+70-8 = 7512
+    ];
+    expect(spotFromFlowParity(trades, now)).toBe(7515); // mediana de [7512, 7515, 7516]
+  });
+  it("descarta strikes sin ambas patas, patas viejas o muy separadas en el tiempo", () => {
+    expect(spotFromFlowParity([leg(7500, "call", 40, "2026-07-31T17:59:00Z")], now)).toBeNull(); // sin put
+    // pata de hace 30 min → fuera de la ventana
+    expect(
+      spotFromFlowParity(
+        [leg(7500, "call", 40, "2026-07-31T17:30:00Z"), leg(7500, "put", 25, "2026-07-31T17:30:00Z")],
+        now,
+        { windowMin: 15 },
+      ),
+    ).toBeNull();
+    // call reciente pero put de hace 10 min (> maxPairGap 5) → descartada
+    expect(
+      spotFromFlowParity(
+        [leg(7500, "call", 40, "2026-07-31T17:59:00Z"), leg(7500, "put", 25, "2026-07-31T17:49:00Z")],
+        now,
+      ),
+    ).toBeNull();
   });
 });
 

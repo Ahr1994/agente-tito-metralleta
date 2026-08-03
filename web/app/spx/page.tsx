@@ -505,10 +505,15 @@ export default function SpxPage() {
                 {monitor.spot != null && (
                   <>
                     spot{" "}
-                    <b style={{ color: monitor.spotSource === "realtime" ? "#12b76a" : "#b54708" }}>
+                    <b style={{ color: monitor.spotSource === "derived" ? "#b54708" : "#12b76a" }}>
                       ${monitor.spot.toFixed(1)}
                     </b>{" "}
-                    {monitor.spotSource === "realtime" ? "(tiempo real ✅)" : "(retrasado ⚠)"} ·{" "}
+                    {monitor.spotSource === "tape"
+                      ? "(tiempo real ✅)"
+                      : monitor.spotSource === "parity"
+                        ? "(tiempo real · paridad ✅)"
+                        : "(retrasado ⚠)"}{" "}
+                    ·{" "}
                   </>
                 )}
                 <span style={{ color: "#f04438" }}>●</span> en vivo

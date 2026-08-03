@@ -19,6 +19,7 @@ import {
   spxEdgeSignal,
   spxDailySigmaPct,
   realtimeSpotFromFlow,
+  spotFromFlowParity,
   type SpxSafeSetup,
   type SpxFreshness,
   type SpxEdgeSignal,
@@ -255,7 +256,7 @@ export interface SpxMonitorPosition {
 export interface SpxMonitorResult {
   positions: SpxMonitorPosition[]; // tus spreads guardados que aún no vencen
   spot: number | null;
-  spotSource: "realtime" | "derived"; // realtime = tape (fiable) · derived = cadena retrasada
+  spotSource: "tape" | "parity" | "derived"; // tape/parity = tiempo real · derived = cadena retrasada
   generatedAt: string;
   note: string;
 }
@@ -282,11 +283,16 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     /* cookie caducada → seguimos con el spot derivado */
   }
 
-  // FIX: usar el spot en TIEMPO REAL de la tape (asset_price), no el derivado retrasado, que daba
-  // colchones falsos. Y ajustar los marks de la cadena al spot real por delta (1er orden).
-  const rtSpot = realtimeSpotFromFlow(flowTrades);
+  // FIX: usar el spot en TIEMPO REAL, no el derivado retrasado que daba colchones falsos.
+  // Preferencia: (1) asset_price de la tape; (2) paridad put-call del flujo en vivo (cuando
+  // MarketSnack manda asset_price null); (3) derivado de la cadena (retrasado). Luego se
+  // ajustan los marks de la cadena al spot real por delta (1er orden).
+  const tapeSpot = realtimeSpotFromFlow(flowTrades);
+  const paritySpot = tapeSpot == null ? spotFromFlowParity(flowTrades, now) : null;
+  const rtSpot = tapeSpot ?? paritySpot;
   const spot = rtSpot ?? derivedSpot;
-  const spotSource: "realtime" | "derived" = rtSpot != null ? "realtime" : "derived";
+  const spotSource: "tape" | "parity" | "derived" =
+    tapeSpot != null ? "tape" : paritySpot != null ? "parity" : "derived";
   const spotGap = rtSpot != null && derivedSpot != null ? rtSpot - derivedSpot : 0;
   const markToReal = (q: { delta: number | null; price: number } | undefined): number | null =>
     q == null ? null : Math.max(0, q.price + (q.delta ?? 0) * spotGap);
@@ -327,9 +333,11 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     spotSource,
     generatedAt: now.toISOString(),
     note:
-      spotSource === "realtime"
+      spotSource === "tape"
         ? "Spot en tiempo real (tape). El P&L es estimado (marks ajustados por delta) — confía en tu broker para el exacto."
-        : "⚠ Spot derivado (retrasado) — sin flujo en vivo. Confía en tu broker para el precio real.",
+        : spotSource === "parity"
+          ? "Spot en tiempo real por paridad del flujo (MarketSnack no dio asset_price). El P&L es estimado — confía en tu broker."
+          : "⚠ Spot derivado (retrasado) — sin flujo en vivo. Confía en tu broker para el precio real.",
   };
 }
 

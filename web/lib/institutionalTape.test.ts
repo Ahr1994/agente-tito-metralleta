@@ -9,6 +9,7 @@ function t(over: Partial<SpxFlowTrade> = {}): SpxFlowTrade {
     expiration: "2026-07-31",
     side: "bid",
     rawSide: "BIDSIDE",
+    price: 1,
     premium: 300_000,
     size: 100,
     oi: 0,

@@ -13,6 +13,7 @@ function ft(over: Partial<SpxFlowTrade> = {}): SpxFlowTrade {
     expiration: "2026-07-31", // 1DTE
     side: "bid", // venta
     rawSide: "BIDSIDE",
+    price: 1,
     premium: 300_000,
     size: 500,
     oi: 1000,
