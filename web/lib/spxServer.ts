@@ -4,7 +4,7 @@
 
 import { fetchSpxChain, fetchDailyBars, fetchCompany, fetchStockChanges } from "./massive";
 import { mag7Breadth, MAG7, type Mag7Breadth } from "./mag7";
-import { fetchSpxFlow } from "./marketsnack";
+import { fetchSpxFlow, fetchSpxIndex, fetchSpxMsGex, type MsGexSnapshot } from "./marketsnack";
 import { marketDateStr } from "./occ";
 import { loadSpxTrades, type SpxTrade } from "./spxTradeStore";
 import { reviewSpxTrade, summarizeSpxTrades, type SpxTradeReview, type SpxTrackRecord } from "./spxReview";
@@ -49,7 +49,9 @@ export interface SpxDteSetup {
 
 export interface SpxAnalysis {
   spot: number | null;
-  spotDerived: true; // el índice da 403 → siempre derivado por paridad
+  spotSource: "index" | "derived"; // index = MarketSnack tiempo real (plan Indices) · derived = paridad
+  indexDelayed: boolean; // true si MarketSnack marca el precio como retrasado
+  msGex: MsGexSnapshot | null; // GEX oficial de MarketSnack (muros, max pain, flip)
   ivRank: SpxIvRank;
   atmIv: number | null; // decimal
   freshness: SpxFreshness; // idea #3: data stale
@@ -70,11 +72,17 @@ export async function computeSpx(
   const credit = opts.credit;
 
   const { quotes } = await fetchSpxChain();
-  const spot = deriveSpxSpot(quotes);
   const { zeroDte, oneDte, zeroExp, oneExp } = splitByDte(quotes, now);
 
-  // SPY×10 en vivo como referencia para detectar rezago de la cadena (idea #3).
-  const spy = await fetchCompany("SPY").catch(() => null);
+  // Spot en TIEMPO REAL de MarketSnack (plan Indices) + su GEX oficial; fallback a paridad.
+  const [index, msGex, spy] = await Promise.all([
+    fetchSpxIndex(),
+    fetchSpxMsGex(),
+    fetchCompany("SPY").catch(() => null),
+  ]);
+  const derivedSpot = deriveSpxSpot(quotes);
+  const spot = index?.price ?? derivedSpot;
+  const spotSource: "index" | "derived" = index?.price != null ? "index" : "derived";
   const refSpot = spy?.price && spy.price > 0 ? spy.price * 10 : null;
 
   // Flujo (puede fallar si la cookie caducó — no bloquea el resto).
@@ -132,7 +140,9 @@ export async function computeSpx(
 
   return {
     spot,
-    spotDerived: true,
+    spotSource,
+    indexDelayed: index?.delayed ?? false,
+    msGex,
     ivRank,
     atmIv,
     freshness,
@@ -256,7 +266,7 @@ export interface SpxMonitorPosition {
 export interface SpxMonitorResult {
   positions: SpxMonitorPosition[]; // tus spreads guardados que aún no vencen
   spot: number | null;
-  spotSource: "tape" | "parity" | "derived"; // tape/parity = tiempo real · derived = cadena retrasada
+  spotSource: "index" | "tape" | "parity" | "derived"; // index/tape/parity = tiempo real · derived = retrasado
   generatedAt: string;
   note: string;
 }
@@ -274,7 +284,7 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     return { positions: [], spot: null, spotSource: "derived", generatedAt: now.toISOString(), note: "Sin posiciones abiertas. Guarda un spread con ⭐ para monitorearlo." };
   }
 
-  const { quotes } = await fetchSpxChain();
+  const [{ quotes }, index] = await Promise.all([fetchSpxChain(), fetchSpxIndex()]);
   const derivedSpot = deriveSpxSpot(quotes);
   let flowTrades: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
   try {
@@ -283,16 +293,17 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     /* cookie caducada → seguimos con el spot derivado */
   }
 
-  // FIX: usar el spot en TIEMPO REAL, no el derivado retrasado que daba colchones falsos.
-  // Preferencia: (1) asset_price de la tape; (2) paridad put-call del flujo en vivo (cuando
-  // MarketSnack manda asset_price null); (3) derivado de la cadena (retrasado). Luego se
-  // ajustan los marks de la cadena al spot real por delta (1er orden).
-  const tapeSpot = realtimeSpotFromFlow(flowTrades);
-  const paritySpot = tapeSpot == null ? spotFromFlowParity(flowTrades, now) : null;
-  const rtSpot = tapeSpot ?? paritySpot;
+  // Spot en TIEMPO REAL, no el derivado retrasado que daba colchones falsos. Preferencia:
+  // (1) índice de MarketSnack (plan Indices, lo más fiable); (2) asset_price de la tape;
+  // (3) paridad put-call del flujo; (4) derivado de la cadena. Luego se ajustan los marks de
+  // la cadena al spot real por delta (1er orden).
+  const indexSpot = index?.price ?? null;
+  const tapeSpot = indexSpot == null ? realtimeSpotFromFlow(flowTrades) : null;
+  const paritySpot = indexSpot == null && tapeSpot == null ? spotFromFlowParity(flowTrades, now) : null;
+  const rtSpot = indexSpot ?? tapeSpot ?? paritySpot;
   const spot = rtSpot ?? derivedSpot;
-  const spotSource: "tape" | "parity" | "derived" =
-    tapeSpot != null ? "tape" : paritySpot != null ? "parity" : "derived";
+  const spotSource: "index" | "tape" | "parity" | "derived" =
+    indexSpot != null ? "index" : tapeSpot != null ? "tape" : paritySpot != null ? "parity" : "derived";
   const spotGap = rtSpot != null && derivedSpot != null ? rtSpot - derivedSpot : 0;
   const markToReal = (q: { delta: number | null; price: number } | undefined): number | null =>
     q == null ? null : Math.max(0, q.price + (q.delta ?? 0) * spotGap);
@@ -333,11 +344,13 @@ export async function spxMonitor(now: Date = new Date()): Promise<SpxMonitorResu
     spotSource,
     generatedAt: now.toISOString(),
     note:
-      spotSource === "tape"
-        ? "Spot en tiempo real (tape). El P&L es estimado (marks ajustados por delta) — confía en tu broker para el exacto."
-        : spotSource === "parity"
-          ? "Spot en tiempo real por paridad del flujo (MarketSnack no dio asset_price). El P&L es estimado — confía en tu broker."
-          : "⚠ Spot derivado (retrasado) — sin flujo en vivo. Confía en tu broker para el precio real.",
+      spotSource === "index"
+        ? "Spot del índice SPX en TIEMPO REAL (MarketSnack, plan Indices). El P&L es estimado (marks ajustados por delta) — confía en tu broker para el exacto."
+        : spotSource === "tape"
+          ? "Spot en tiempo real (tape). El P&L es estimado (marks ajustados por delta) — confía en tu broker."
+          : spotSource === "parity"
+            ? "Spot en tiempo real por paridad del flujo. El P&L es estimado — confía en tu broker."
+            : "⚠ Spot derivado (retrasado) — sin flujo en vivo. Confía en tu broker para el precio real.",
   };
 }
 

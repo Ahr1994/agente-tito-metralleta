@@ -161,3 +161,99 @@ async function paginate(
 
   return { trades, pages: page, truncated };
 }
+
+/** GET autenticado al API de MarketSnack (base /api). Reusa la cookie de sesión. */
+async function msGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE_URL}/api${path}`, {
+    headers: { Accept: "application/json", Cookie: cookie() },
+    cache: "no-store",
+    redirect: "manual",
+  });
+  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+    throw new MarketSnackError(
+      "Sesión de MarketSnack inválida o expirada. Actualiza MARKETSNACK_COOKIE en .env.local.",
+      res.status,
+    );
+  }
+  if (!res.ok) throw new MarketSnackError(`MarketSnack respondió ${res.status}.`, res.status);
+  return (await res.json()) as T;
+}
+
+export interface SpxIndexQuote {
+  price: number; // valor del índice en tiempo real (plan Indices)
+  delayed: boolean;
+  changePct: number | null;
+  prevClose: number | null;
+}
+
+/**
+ * Precio del índice SPX en TIEMPO REAL desde MarketSnack (plan GEX & Indices). Resuelve el
+ * problema del spot retrasado — antes se derivaba por paridad porque Massive da 403 en el índice.
+ */
+export async function fetchSpxIndex(symbol = "SPX"): Promise<SpxIndexQuote | null> {
+  try {
+    const d = await msGet<{
+      latest_price?: number;
+      regular_price?: number;
+      delayed_price?: boolean;
+      prev_close_price?: number;
+      regular_price_change?: { percentage?: number };
+    }>(`/assets/${encodeURIComponent(symbol)}`);
+    const price = d.latest_price ?? d.regular_price;
+    if (price == null || !(price > 0)) return null;
+    return {
+      price,
+      delayed: Boolean(d.delayed_price),
+      changePct: d.regular_price_change?.percentage ?? null,
+      prevClose: d.prev_close_price ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface MsGexSnapshot {
+  netGex: number | null;
+  callWall: number | null;
+  putWall: number | null;
+  magnet: number | null;
+  maxPain: number | null;
+  gammaFlip: number | null;
+  assetPrice: number | null;
+  at: string | null;
+}
+
+/**
+ * GEX oficial de MarketSnack (muros de call/put, imán, max pain, flip, net GEX) — su propio
+ * cálculo, más autoritativo que el que el agente estima. Toma la foto más reciente de la serie.
+ */
+export async function fetchSpxMsGex(symbol = "SPX"): Promise<MsGexSnapshot | null> {
+  try {
+    const d = await msGet<{
+      data?: {
+        net_gex?: number;
+        call_wall?: number;
+        put_wall?: number;
+        magnet?: number;
+        max_pain?: number;
+        gamma_flip?: number;
+        asset_price?: number;
+        t?: string;
+      }[];
+    }>(`/assets/${encodeURIComponent(symbol)}/gex_stats_chart`);
+    const last = d.data?.[d.data.length - 1];
+    if (!last) return null;
+    return {
+      netGex: last.net_gex ?? null,
+      callWall: last.call_wall ?? null,
+      putWall: last.put_wall ?? null,
+      magnet: last.magnet ?? null,
+      maxPain: last.max_pain ?? null,
+      gammaFlip: last.gamma_flip ?? null,
+      assetPrice: last.asset_price ?? null,
+      at: last.t ?? null,
+    };
+  } catch {
+    return null;
+  }
+}

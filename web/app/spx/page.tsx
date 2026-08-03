@@ -410,8 +410,10 @@ export default function SpxPage() {
           {data && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 18, marginTop: 12, alignItems: "baseline" }}>
               <div>
-                <span className="muted" style={{ fontSize: "0.8em" }}>Spot SPX (derivado)</span>{" "}
-                <b style={{ fontSize: "1.2em" }}>${data.spot?.toFixed(0) ?? "—"}</b>
+                <span className="muted" style={{ fontSize: "0.8em" }}>
+                  Spot SPX {data.spotSource === "index" ? (data.indexDelayed ? "(retrasado)" : "(tiempo real ✅)") : "(derivado)"}
+                </span>{" "}
+                <b style={{ fontSize: "1.2em" }}>${data.spot?.toFixed(1) ?? "—"}</b>
               </div>
               <div>
                 <span className="muted" style={{ fontSize: "0.8em" }}>IV ATM</span>{" "}
@@ -478,6 +480,28 @@ export default function SpxPage() {
                 ⚠ {mag7.breadth.warning}
               </div>
             )}
+          </section>
+        )}
+
+        {data?.msGex && (data.msGex.callWall || data.msGex.putWall) && (
+          <section className="scorecard" style={{ marginTop: 12, borderLeft: "5px solid #7a5af8" }}>
+            <b>🎯 GEX oficial de MarketSnack (plan Indices)</b>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 20, marginTop: 8 }}>
+              <div><div className="muted" style={{ fontSize: "0.78em" }}>Muro puts (soporte)</div><b>{data.msGex.putWall ?? "—"}</b></div>
+              <div><div className="muted" style={{ fontSize: "0.78em" }}>Muro calls (resistencia)</div><b>{data.msGex.callWall ?? "—"}</b></div>
+              <div><div className="muted" style={{ fontSize: "0.78em" }}>Imán</div><b>{data.msGex.magnet ?? "—"}</b></div>
+              <div><div className="muted" style={{ fontSize: "0.78em" }}>Max pain</div><b>{data.msGex.maxPain ?? "—"}</b></div>
+              <div><div className="muted" style={{ fontSize: "0.78em" }}>Gamma flip</div><b>{data.msGex.gammaFlip?.toFixed(0) ?? "—"}</b></div>
+              <div>
+                <div className="muted" style={{ fontSize: "0.78em" }}>Net GEX</div>
+                <b style={{ color: (data.msGex.netGex ?? 0) >= 0 ? "#12b76a" : "#f04438" }}>
+                  {data.msGex.netGex != null ? `${data.msGex.netGex >= 0 ? "+" : ""}${(data.msGex.netGex / 1e9).toFixed(2)}B` : "—"}
+                </b>
+              </div>
+            </div>
+            <div className="muted" style={{ fontSize: "0.78em", marginTop: 6 }}>
+              Muros calculados por MarketSnack (más autoritativos que la estimación del agente). Net GEX + = pinnea, − = amplifica.
+            </div>
           </section>
         )}
 
@@ -942,7 +966,7 @@ export default function SpxPage() {
         )}
 
         <div className="muted" style={{ fontSize: "0.8em", marginTop: 12 }}>
-          Spot derivado por paridad put-call (el índice requiere plan Indices). Riesgo definido,
+          Spot del índice SPX en tiempo real (MarketSnack, plan Indices); si falla, se deriva por paridad. Riesgo definido,
           pero el 0DTE tiene gap/tail risk real. No es consejo financiero.
         </div>
       </div>
