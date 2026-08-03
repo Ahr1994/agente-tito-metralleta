@@ -72,8 +72,10 @@ export interface ClosingMomentumInput {
   magnet: number | null;
   aggBullPremium: number; // $ agresivo alcista reciente (Aggr.Buy calls + Aggr.Sell puts)
   aggBearPremium: number; // $ agresivo bajista reciente (Aggr.Buy puts + Aggr.Sell calls)
+  gexAt?: string | null; // timestamp del snapshot de GEX (para detectar si está viejo)
   windowMin?: number; // ventana de cierre (default 120 = 2h)
   flowThreshold?: number; // % neto mínimo para dar dirección (default 20)
+  gexStaleMin?: number; // antigüedad del GEX que se considera stale (default 45 min)
 }
 
 export interface ClosingMomentumSignal {
@@ -86,6 +88,8 @@ export interface ClosingMomentumSignal {
   targetPts: number | null; // distancia al target
   flowNetPct: number; // −100..100 (+ = alcista)
   conviction: number; // 0-100
+  gexStale: boolean; // el snapshot de GEX está viejo → señal poco fiable
+  gexAgeMin: number | null; // antigüedad del GEX en minutos
   headline: string;
   reasons: string[];
 }
@@ -141,14 +145,24 @@ export function closingMomentumSignal(input: ClosingMomentumInput): ClosingMomen
 
   const targetPts = target != null ? Math.round(Math.abs(target - input.spot)) : null;
 
+  // Salvaguarda: si el GEX está viejo, el régimen/muros/flip no son de fiar → capar convicción.
+  const gexStaleMin = input.gexStaleMin ?? 45;
+  const gexAgeMin =
+    input.gexAt != null && Number.isFinite(Date.parse(input.gexAt))
+      ? Math.max(0, Math.round((input.now.getTime() - Date.parse(input.gexAt)) / 60000))
+      : null;
+  const gexStale = gexAgeMin != null && gexAgeMin > gexStaleMin;
+
   let conviction = 0;
   if (setup === "momentum") conviction += 35;
   else if (setup === "breakout") conviction += 20;
   conviction += Math.min(Math.abs(flowNetPct), 60) * 0.6;
   if (target != null && targetPts != null && targetPts > 0) conviction += 15;
-  conviction = Math.min(100, Math.round(conviction));
+  conviction = setup === "none" ? 0 : Math.min(100, Math.round(conviction)); // sin setup = sin convicción
+  if (gexStale) conviction = Math.min(conviction, 25); // GEX viejo → nunca alta confianza
 
   const reasons: string[] = [];
+  if (gexStale) reasons.push(`⚠ GEX de hace ${gexAgeMin} min (poco fiable, verifica)`);
   reasons.push(`gamma ${regime === "negative" ? "NEGATIVA (amplifica moves)" : "positiva (pinnea)"}`);
   reasons.push(`flujo agresivo ${flowBias === "long" ? "ALCISTA" : flowBias === "short" ? "BAJISTA" : "mixto"} (${flowNetPct >= 0 ? "+" : ""}${Math.round(flowNetPct)}%)`);
   if (input.gammaFlip != null) reasons.push(`flip ${input.gammaFlip.toFixed(0)} (spot ${input.spot > input.gammaFlip ? "arriba" : "abajo"})`);
@@ -162,6 +176,7 @@ export function closingMomentumSignal(input: ClosingMomentumInput): ClosingMomen
   else if (setup === "breakout" && bias === "long") headline = `📈 Breakout ALCISTA (rompe el muro) → target ${target ?? "?"}`;
   else if (setup === "breakout" && bias === "short") headline = `📉 Breakout BAJISTA (rompe el muro) → target ${target ?? "?"}`;
   else headline = "⏳ En ventana de cierre, sin setup direccional claro (gamma pinnea o flujo mixto).";
+  if (gexStale && setup !== "none") headline += " ⚠ GEX viejo — verifica";
 
   return {
     active,
@@ -173,6 +188,8 @@ export function closingMomentumSignal(input: ClosingMomentumInput): ClosingMomen
     targetPts,
     flowNetPct: Math.round(flowNetPct),
     conviction,
+    gexStale,
+    gexAgeMin,
     headline,
     reasons,
   };

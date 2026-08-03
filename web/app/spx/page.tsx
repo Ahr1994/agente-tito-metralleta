@@ -492,6 +492,11 @@ export default function SpxPage() {
                     <span>Convicción: <b>{s.conviction}/100</b></span>
                     <span className="muted">gamma {s.regime === "negative" ? "γ− (amplifica)" : "γ+ (breakout)"}</span>
                   </div>
+                  {s.gexStale && (
+                    <div style={{ color: "#b42318", fontWeight: 700, fontSize: "0.82em", marginTop: 4 }}>
+                      ⚠ GEX de hace {s.gexAgeMin} min — convicción capada, verifica antes de entrar.
+                    </div>
+                  )}
                   <div className="muted" style={{ fontSize: "0.82em", marginTop: 6 }}>{s.reasons.join(" · ")}</div>
                 </>
               ) : (

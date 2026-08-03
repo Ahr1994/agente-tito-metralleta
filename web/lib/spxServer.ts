@@ -458,6 +458,7 @@ export async function spxMomentum(now: Date = new Date()): Promise<SpxMomentumRe
     magnet: msGex?.magnet ?? null,
     aggBullPremium: aggFlow.aggBullPremium,
     aggBearPremium: aggFlow.aggBearPremium,
+    gexAt: msGex?.at ?? null,
   });
 
   return { signal, aggFlow, spot, spotSource, generatedAt: now.toISOString(), flowError };

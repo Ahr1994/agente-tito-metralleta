@@ -94,6 +94,21 @@ describe("closingMomentumSignal", () => {
     expect(s.setup).toBe("none");
   });
 
+  it("GEX viejo → capa la convicción y avisa (salvaguarda)", () => {
+    const fresh = closingMomentumSignal(
+      base({ aggBullPremium: 5_000_000, aggBearPremium: 300_000, gexAt: new Date(IN_WINDOW.getTime() - 5 * 60_000).toISOString() }),
+    );
+    const stale = closingMomentumSignal(
+      base({ aggBullPremium: 5_000_000, aggBearPremium: 300_000, gexAt: new Date(IN_WINDOW.getTime() - 90 * 60_000).toISOString() }),
+    );
+    expect(fresh.gexStale).toBe(false);
+    expect(stale.gexStale).toBe(true);
+    expect(stale.gexAgeMin).toBe(90);
+    expect(stale.conviction).toBeLessThanOrEqual(25); // capado
+    expect(stale.conviction).toBeLessThan(fresh.conviction);
+    expect(stale.headline).toMatch(/GEX viejo/i);
+  });
+
   it("fuera de la ventana (mañana) → inactivo, sin setup", () => {
     const s = closingMomentumSignal(base({ now: EARLY, aggBullPremium: 5_000_000, aggBearPremium: 100_000 }));
     expect(s.active).toBe(false);
