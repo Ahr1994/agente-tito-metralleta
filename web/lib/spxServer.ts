@@ -4,7 +4,8 @@
 
 import { fetchSpxChain, fetchDailyBars, fetchCompany, fetchStockChanges } from "./massive";
 import { mag7Breadth, MAG7, type Mag7Breadth } from "./mag7";
-import { fetchSpxFlow, fetchSpxIndex, fetchSpxMsGex, type MsGexSnapshot } from "./marketsnack";
+import { fetchSpxFlow, fetchSpxIndex, fetchSpxMsGex, fetchSpxSentiment, type MsGexSnapshot } from "./marketsnack";
+import type { SpxDaySentiment } from "./spx";
 import { marketDateStr } from "./occ";
 import { loadSpxTrades, type SpxTrade } from "./spxTradeStore";
 import { reviewSpxTrade, summarizeSpxTrades, type SpxTradeReview, type SpxTrackRecord } from "./spxReview";
@@ -52,6 +53,7 @@ export interface SpxAnalysis {
   spotSource: "index" | "derived"; // index = MarketSnack tiempo real (plan Indices) · derived = paridad
   indexDelayed: boolean; // true si MarketSnack marca el precio como retrasado
   msGex: MsGexSnapshot | null; // GEX oficial de MarketSnack (muros, max pain, flip)
+  daySentiment: SpxDaySentiment | null; // sentiment del día (premium calls/puts comprado/vendido)
   ivRank: SpxIvRank;
   atmIv: number | null; // decimal
   freshness: SpxFreshness; // idea #3: data stale
@@ -74,10 +76,11 @@ export async function computeSpx(
   const { quotes } = await fetchSpxChain();
   const { zeroDte, oneDte, zeroExp, oneExp } = splitByDte(quotes, now);
 
-  // Spot en TIEMPO REAL de MarketSnack (plan Indices) + su GEX oficial; fallback a paridad.
-  const [index, msGex, spy] = await Promise.all([
+  // Spot en TIEMPO REAL de MarketSnack (plan Indices) + su GEX oficial + sentiment del día.
+  const [index, msGex, daySentiment, spy] = await Promise.all([
     fetchSpxIndex(),
     fetchSpxMsGex(),
+    fetchSpxSentiment().catch(() => null),
     fetchCompany("SPY").catch(() => null),
   ]);
   const derivedSpot = deriveSpxSpot(quotes);
@@ -143,6 +146,7 @@ export async function computeSpx(
     spotSource,
     indexDelayed: index?.delayed ?? false,
     msGex,
+    daySentiment,
     ivRank,
     atmIv,
     freshness,

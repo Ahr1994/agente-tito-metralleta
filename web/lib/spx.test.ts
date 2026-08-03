@@ -12,6 +12,7 @@ import {
   sizeSpxPosition,
   realtimeSpotFromFlow,
   spotFromFlowParity,
+  spxDaySentiment,
   type SpxFlowTrade,
   type SpxQuote,
   type SpxGex,
@@ -337,6 +338,24 @@ describe("spxFreshness — data stale (idea #3)", () => {
     expect(r.status).toBe("closed");
     expect(r.stale).toBe(true);
     expect(r.marketOpen).toBe(false);
+  });
+});
+
+describe("spxDaySentiment — sentiment del día (MarketSnack)", () => {
+  it("alcista: calls comprados + puts vendidos dominan", () => {
+    const s = spxDaySentiment({ callsBought: 2_000_000, putsSold: 1_000_000, putsBought: 500_000, callsSold: 500_000 });
+    expect(s.bullishPremium).toBe(3_000_000); // 2M + 1M
+    expect(s.bearishPremium).toBe(1_000_000); // 0.5M + 0.5M
+    expect(s.lean).toBe("bullish");
+  });
+  it("bajista: puts comprados + calls vendidos dominan", () => {
+    const s = spxDaySentiment({ callsBought: 500_000, putsSold: 500_000, putsBought: 2_000_000, callsSold: 1_500_000 });
+    expect(s.lean).toBe("bearish");
+  });
+  it("neutral cuando está equilibrado", () => {
+    const s = spxDaySentiment({ callsBought: 1_000_000, putsSold: 1_000_000, putsBought: 1_000_000, callsSold: 1_000_000 });
+    expect(s.lean).toBe("neutral");
+    expect(s.netPct).toBe(0);
   });
 });
 

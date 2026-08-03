@@ -554,6 +554,39 @@ export function spxSafeExtremes(
   return { spot, expiration, atmIv: iv, sigma1Pct, gex, bias, extremes };
 }
 
+export interface SpxSentimentBreakdown {
+  callsBought: number; // premium $
+  callsSold: number;
+  putsBought: number;
+  putsSold: number;
+}
+
+export interface SpxDaySentiment extends SpxSentimentBreakdown {
+  bullishPremium: number; // calls comprados + puts vendidos
+  bearishPremium: number; // puts comprados + calls vendidos
+  netPct: number; // −100..100 (+ = alcista)
+  lean: "bullish" | "bearish" | "neutral";
+}
+
+/**
+ * Sentiment del DÍA COMPLETO de SPX desde el desglose de premium de MarketSnack (más robusto
+ * que muestrear la tape reciente). Regla de dominio: comprar call / vender put = alcista;
+ * comprar put / vender call = bajista.
+ */
+export function spxDaySentiment(b: SpxSentimentBreakdown): SpxDaySentiment {
+  const bull = b.callsBought + b.putsSold;
+  const bear = b.putsBought + b.callsSold;
+  const total = bull + bear;
+  const netPct = total > 0 ? ((bull - bear) / total) * 100 : 0;
+  return {
+    ...b,
+    bullishPremium: bull,
+    bearishPremium: bear,
+    netPct,
+    lean: netPct > 8 ? "bullish" : netPct < -8 ? "bearish" : "neutral",
+  };
+}
+
 export interface SpxEdgeSignal {
   level: "go" | "meh" | "wait"; // 🟢 hay edge / 🟡 flojo / 🔴 espera
   score: number; // 0-100

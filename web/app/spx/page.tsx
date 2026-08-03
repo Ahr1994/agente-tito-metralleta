@@ -505,6 +505,32 @@ export default function SpxPage() {
           </section>
         )}
 
+        {data?.daySentiment && (
+          <section
+            className="scorecard"
+            style={{
+              marginTop: 12,
+              borderLeft: `5px solid ${data.daySentiment.lean === "bullish" ? "#12b76a" : data.daySentiment.lean === "bearish" ? "#f04438" : "#667085"}`,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+              <b>📈 Sentiment del día (MarketSnack)</b>
+              <b style={{ color: data.daySentiment.lean === "bullish" ? "#12b76a" : data.daySentiment.lean === "bearish" ? "#f04438" : "#667085" }}>
+                {data.daySentiment.lean.toUpperCase()} ({data.daySentiment.netPct >= 0 ? "+" : ""}{data.daySentiment.netPct.toFixed(0)}%)
+              </b>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 8, fontSize: "0.88em" }}>
+              <span>🟢 Alcista <b>${(data.daySentiment.bullishPremium / 1e9).toFixed(2)}B</b></span>
+              <span>🔴 Bajista <b>${(data.daySentiment.bearishPremium / 1e9).toFixed(2)}B</b></span>
+              <span className="muted">calls comp ${(data.daySentiment.callsBought / 1e9).toFixed(2)}B · vend ${(data.daySentiment.callsSold / 1e9).toFixed(2)}B</span>
+              <span className="muted">puts comp ${(data.daySentiment.putsBought / 1e9).toFixed(2)}B · vend ${(data.daySentiment.putsSold / 1e9).toFixed(2)}B</span>
+            </div>
+            <div className="muted" style={{ fontSize: "0.78em", marginTop: 6 }}>
+              Del día COMPLETO (comprar call / vender put = alcista). Más robusto que la tape reciente.
+            </div>
+          </section>
+        )}
+
         {data?.freshness.stale && (
           <section
             className="scorecard"

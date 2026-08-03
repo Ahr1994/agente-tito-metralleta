@@ -2,7 +2,7 @@
 // Auth por cookie de sesión (MARKETSNACK_COOKIE en .env.local). Ver SCOREDCARD/Scoredcard.md.
 
 import type { RawTrade } from "./flow";
-import { parseSpxFlow, type SpxFlowTrade } from "./spx";
+import { parseSpxFlow, spxDaySentiment, type SpxFlowTrade, type SpxDaySentiment } from "./spx";
 
 const BASE_URL = "https://app.marketsnack.com";
 
@@ -253,6 +253,33 @@ export async function fetchSpxMsGex(symbol = "SPX"): Promise<MsGexSnapshot | nul
       assetPrice: last.asset_price ?? null,
       at: last.t ?? null,
     };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sentiment del día completo de SPX (desglose de premium calls/puts comprados/vendidos). Más
+ * autoritativo que la tape reciente porque MarketSnack lo agrega sobre toda la sesión.
+ */
+export async function fetchSpxSentiment(symbol = "SPX"): Promise<SpxDaySentiment | null> {
+  try {
+    const d = await msGet<{
+      sentiment_breakdown?: {
+        calls_bought?: { premium?: number };
+        calls_sold?: { premium?: number };
+        puts_bought?: { premium?: number };
+        puts_sold?: { premium?: number };
+      };
+    }>(`/assets/${encodeURIComponent(symbol)}/sentiment`);
+    const sb = d.sentiment_breakdown;
+    if (!sb) return null;
+    return spxDaySentiment({
+      callsBought: sb.calls_bought?.premium ?? 0,
+      callsSold: sb.calls_sold?.premium ?? 0,
+      putsBought: sb.puts_bought?.premium ?? 0,
+      putsSold: sb.puts_sold?.premium ?? 0,
+    });
   } catch {
     return null;
   }
