@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { suggestCreditSpreads, suggestSpreadsAtSigma, type OptionQuote } from "./premiumSell";
+import {
+  suggestCreditSpreads,
+  suggestSpreadsAtSigma,
+  suggestHedge,
+  type OptionQuote,
+} from "./premiumSell";
 
 describe("suggestSpreadsAtSigma — venta en extremos (±Nσ)", () => {
   const q: OptionQuote[] = [
@@ -102,5 +107,50 @@ describe("suggestCreditSpreads — iron condor y bordes", () => {
     // con 1σ enorme (40%), el borde put baja a 60 → 85/80/75 quedan dentro → sin candidato
     const r = suggestCreditSpreads(quotes, 100, walls, 40, { targetDelta: 0.2, width: 5 });
     expect(r.putSpread).toBeNull();
+  });
+});
+
+describe("suggestHedge — put/call de protección (seguro de cola)", () => {
+  const puts: OptionQuote[] = [
+    { strike: 90, type: "put", price: 2.0, delta: -0.2, oi: 100 },
+    { strike: 85, type: "put", price: 1.2, delta: -0.12, oi: 100 }, // ~target delta
+    { strike: 80, type: "put", price: 0.7, delta: -0.08, oi: 100 },
+    { strike: 75, type: "put", price: 0.4, delta: -0.05, oi: 100 },
+  ];
+
+  it("elige el put más cercano al delta objetivo (0.12) debajo del ala larga", () => {
+    const h = suggestHedge(puts, "bull_put", 88, 100, 95);
+    expect(h?.strike).toBe(85);
+    expect(h?.legType).toBe("put");
+    expect(h?.cost).toBeCloseTo(1.2, 5);
+    expect(h?.costTotal).toBe(120);
+    expect(h?.delta).toBeCloseTo(0.12, 5);
+    expect(h?.distancePct).toBeCloseTo(15, 5); // (100−85)/100
+    expect(h?.inAccelZone).toBe(true); // 85 ≤ flip 95
+  });
+
+  it("marca fuera de la zona de aceleración si el strike queda arriba del flip", () => {
+    const h = suggestHedge(puts, "bull_put", 88, 100, 80); // flip 80 → 85 > 80
+    expect(h?.inAccelZone).toBe(false);
+  });
+
+  it("bear_call: elige un call arriba del ala larga, en zona de aceleración", () => {
+    const calls: OptionQuote[] = [
+      { strike: 110, type: "call", price: 2.0, delta: 0.2, oi: 100 },
+      { strike: 115, type: "call", price: 1.2, delta: 0.12, oi: 100 },
+      { strike: 120, type: "call", price: 0.7, delta: 0.08, oi: 100 },
+    ];
+    const h = suggestHedge(calls, "bear_call", 112, 100, 105);
+    expect(h?.strike).toBe(115);
+    expect(h?.legType).toBe("call");
+    expect(h?.inAccelZone).toBe(true); // 115 ≥ flip 105
+  });
+
+  it("devuelve null si no hay strike más externo que el ala larga", () => {
+    expect(suggestHedge(puts, "bull_put", 74, 100, 95)).toBeNull();
+  });
+
+  it("sin flip, inAccelZone es false", () => {
+    expect(suggestHedge(puts, "bull_put", 88, 100, null)?.inAccelZone).toBe(false);
   });
 });

@@ -129,6 +129,33 @@ function ExtremeCard({
         <b>{size.contracts} spreads</b> → crédito <b style={{ color: "#12b76a" }}>${size.totalCredit}</b>
         {" · "}colateral <b>${(size.totalCollateral ?? 0).toLocaleString()}</b>
       </div>
+      {ex.hedge && (
+        <div
+          style={{
+            marginTop: 6,
+            padding: "6px 8px",
+            background: setup.fragileGamma ? "#fef3f2" : "#f2f4f7",
+            border: setup.fragileGamma ? "1px solid #fda29b" : "none",
+            borderRadius: 8,
+            fontSize: "0.86em",
+          }}
+        >
+          🛡️ Hedge de capital{" "}
+          <b style={{ color: setup.fragileGamma ? "#f04438" : "#667085" }}>
+            {setup.fragileGamma ? "(recomendado hoy — gamma frágil)" : "(opcional — pin fuerte)"}
+          </b>
+          : compra{" "}
+          <b>
+            1× {ex.hedge.strike} {ex.hedge.legType === "put" ? "PUT" : "CALL"}
+          </b>{" "}
+          por ~<b>${ex.hedge.costTotal}</b> (Δ{ex.hedge.delta}, {ex.hedge.distancePct}%{" "}
+          {ex.side === "put" ? "abajo" : "arriba"})
+          {ex.hedge.inAccelZone && " · en zona de aceleración ✅"}
+          <div className="muted" style={{ fontSize: "0.92em", marginTop: 2 }}>
+            ratio 5:1 — 1 hedge por cada ~5 spreads · capa la pérdida ante un movimiento rápido
+          </div>
+        </div>
+      )}
       <button
         className="rescan"
         style={{ marginTop: 10, width: "100%" }}

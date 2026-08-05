@@ -3,7 +3,14 @@
 
 import { marketDateStr, parseOcc } from "./occ";
 import { aggressionOf, type RawTrade } from "./flow";
-import { buildSpread, type OptionQuote, type LevelLite, type Spread } from "./premiumSell";
+import {
+  buildSpread,
+  suggestHedge,
+  type OptionQuote,
+  type LevelLite,
+  type Spread,
+  type HedgeSuggestion,
+} from "./premiumSell";
 
 export interface SpxQuote {
   strike: number;
@@ -399,6 +406,7 @@ export interface SpxExtreme {
   evMargin: number; // ProbOTM − breakevenWinPct (puntos). >0 no-negativo; −1 es al filo, −20 es malo
   evOk: boolean; // evMargin ≥ 0
   recommended: boolean; // el lado que sugiere el flujo agresivo
+  hedge: HedgeSuggestion | null; // put/call de protección a comprar (seguro de cola de capital)
 }
 
 export interface SpxSafeSetup {
@@ -409,6 +417,8 @@ export interface SpxSafeSetup {
   gex: SpxGex;
   bias: SpxFlowBias;
   extremes: SpxExtreme[]; // put y/o call, con el flag recommended
+  /** Gamma frágil (régimen negativo o flip pegado al spot): el hedge pasa de opcional a recomendado. */
+  fragileGamma: boolean;
 }
 
 /**
@@ -532,13 +542,15 @@ export function spxSafeExtremes(
       ? pickByCredit(sideQuotes, side, spot, wall, width, opts.credit.min, opts.credit.max)
       : pickSafeShort(sideQuotes, side, spot, wall, sigmaAbs, maxDelta);
     if (!pick) continue;
-    const spread = buildSpread(side === "put" ? "bull_put" : "bear_call", oq, pick.strike, width, walls);
+    const kind = side === "put" ? "bull_put" : "bear_call";
+    const spread = buildSpread(kind, oq, pick.strike, width, walls);
     if (!spread) continue;
     const shortDelta = sideQuotes.find((q) => q.strike === pick.strike)?.delta ?? null;
     const risk = spread.maxLoss;
     const reward = spread.credit * 100;
     const breakevenWinPct = risk + reward > 0 ? Math.round((risk / (risk + reward)) * 100) : 100;
     const evMargin = spread.probOTM - breakevenWinPct;
+    const hedge = suggestHedge(oq, kind, spread.longStrike, spot, gex.flip);
     extremes.push({
       side,
       spread,
@@ -549,9 +561,14 @@ export function spxSafeExtremes(
       evMargin,
       evOk: evMargin >= 0,
       recommended: bias.sellSide === side || bias.sellSide === "either",
+      hedge,
     });
   }
-  return { spot, expiration, atmIv: iv, sigma1Pct, gex, bias, extremes };
+  // Gamma frágil: régimen negativo (amplifica) o flip a menos de 0.5% del spot (cascada posible).
+  const fragileGamma =
+    gex.regime === "negative" ||
+    (gex.flip != null && spot > 0 && Math.abs(gex.flip - spot) / spot < 0.005);
+  return { spot, expiration, atmIv: iv, sigma1Pct, gex, bias, extremes, fragileGamma };
 }
 
 export interface SpxSentimentBreakdown {

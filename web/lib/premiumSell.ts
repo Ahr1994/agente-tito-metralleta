@@ -210,3 +210,62 @@ export function suggestCreditSpreads(
 
   return { putSpread, callSpread, ironCondor };
 }
+
+export interface HedgeSuggestion {
+  /** Contrato de PROTECCIÓN a COMPRAR (put debajo / call arriba del spread). */
+  strike: number;
+  legType: "put" | "call";
+  /** Costo por acción (prima del hedge). */
+  cost: number;
+  /** Costo de 1 contrato en $. */
+  costTotal: number;
+  /** |delta| del hedge (bajo = cola barata). */
+  delta: number;
+  /** % de distancia respecto al spot. */
+  distancePct: number;
+  /** Cae en la zona de aceleración del GEX (put: ≤ flip / call: ≥ flip). */
+  inAccelZone: boolean;
+}
+
+/**
+ * Sugiere un contrato de PROTECCIÓN (seguro de cola) a comprar más allá del ala larga de un
+ * credit spread: para un bull_put, un put debajo del long; para un bear_call, un call arriba.
+ * Protege el capital ante un movimiento RÁPIDO que atraviese el spread — en SPX, la cascada de
+ * gamma negativa cuando el precio cruza el flip y no da tiempo a cerrar. Estrategia: 1 contrato
+ * por cada ~5 spreads (ratio 5:1), MUY OTM (`targetDelta` bajo = barato) e idealmente dentro de
+ * la zona de aceleración (más allá del flip). Devuelve null si no hay strike más externo que el long.
+ */
+export function suggestHedge(
+  quotes: OptionQuote[],
+  kind: SpreadKind,
+  longStrike: number,
+  spot: number,
+  flip: number | null,
+  opts: { targetDelta?: number } = {},
+): HedgeSuggestion | null {
+  const isPut = kind === "bull_put";
+  const legType: "put" | "call" = isPut ? "put" : "call";
+  const targetDelta = opts.targetDelta ?? 0.12; // muy OTM: barato pero aún activa en un move real
+
+  const cands = quotes
+    .filter((q) => q.type === legType && q.price > 0)
+    .filter((q) => (isPut ? q.strike < longStrike : q.strike > longStrike));
+  if (cands.length === 0) return null;
+
+  const pick = cands.reduce((a, b) =>
+    Math.abs(Math.abs(b.delta) - targetDelta) < Math.abs(Math.abs(a.delta) - targetDelta) ? b : a,
+  );
+
+  const inAccelZone = flip == null ? false : isPut ? pick.strike <= flip : pick.strike >= flip;
+  const distancePct = ((isPut ? spot - pick.strike : pick.strike - spot) / spot) * 100;
+
+  return {
+    strike: pick.strike,
+    legType,
+    cost: round2(pick.price),
+    costTotal: Math.round(pick.price * 100),
+    delta: round2(Math.abs(pick.delta)),
+    distancePct: round2(distancePct),
+    inAccelZone,
+  };
+}
