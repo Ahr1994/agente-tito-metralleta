@@ -9,7 +9,7 @@ import type {
   SpxWallBacktestResult,
   SpxClosingFlowResult,
   SpxMonitorResult,
-  SpxTapeResult,
+  SpxTapeReadResult,
   SpxMag7Result,
   SpxMomentumResult,
 } from "@/lib/spxServer";
@@ -266,7 +266,7 @@ export default function SpxPage() {
   const [closing, setClosing] = useState<SpxClosingFlowResult | null>(null);
   const [monitor, setMonitor] = useState<SpxMonitorResult | null>(null);
   const [monitorAt, setMonitorAt] = useState<number | null>(null);
-  const [tape, setTape] = useState<SpxTapeResult | null>(null);
+  const [tape, setTape] = useState<SpxTapeReadResult | null>(null);
   const [tapeAt, setTapeAt] = useState<number | null>(null);
   const [mag7, setMag7] = useState<SpxMag7Result | null>(null);
   const [momentum, setMomentum] = useState<SpxMomentumResult | null>(null);
@@ -343,7 +343,7 @@ export default function SpxPage() {
       const res = await fetch("/api/spx-tape", { cache: "no-store" });
       const json = await res.json();
       if (res.ok) {
-        setTape(json as SpxTapeResult);
+        setTape(json as SpxTapeReadResult);
         setTapeAt(Date.now());
       }
     } catch {
@@ -791,60 +791,73 @@ export default function SpxPage() {
         {tape && (
           <section className="scorecard" style={{ marginTop: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
-              <b>🏦 Tape institucional SPX</b>
+              <b>🏦 Tape institucional SPX · estructura</b>
               <span className="muted" style={{ fontSize: "0.78em" }}>
-                <span style={{ color: "#12b76a" }}>●</span> live
+                <span style={{ color: "#12b76a" }}>●</span> captura continua · {tape.captured} prints hoy
                 {tapeAt && ` · ${Math.round((Date.now() - tapeAt) / 1000)}s` } · auto 45s
               </span>
             </div>
             <div className="muted" style={{ fontSize: "0.82em", marginTop: 2 }}>
-              Prints grandes (≥${(tape.minPremium / 1000).toFixed(0)}K) que alimentan la foto de gamma.
+              Agrupa combos y separa el flujo <b>LIMPIO</b> (single-leg direccional) del <b>ESTRUCTURAL</b> (sintéticos/deep-ITM/vol) para no leer mal un intrínseco.
             </div>
             {tape.flowError ? (
               <div style={{ color: "#b54708", fontSize: "0.85em", marginTop: 8 }}>⚠ Flujo no disponible ({tape.flowError})</div>
-            ) : tape.tape.prints.length === 0 ? (
-              <div className="muted" style={{ marginTop: 8 }}>Sin prints institucionales por ahora.</div>
+            ) : tape.read.structures.length === 0 ? (
+              <div className="muted" style={{ marginTop: 8 }}>Sin prints institucionales capturados aún hoy.</div>
             ) : (
               <>
-                <div style={{ display: "flex", gap: 16, margin: "10px 0", flexWrap: "wrap" }}>
-                  <span>Premium capturado: <b>${(tape.tape.premiumTotal / 1e6).toFixed(0)}M</b> <span className="muted">({tape.tape.count} prints)</span></span>
-                  <span>
-                    Sesgo:{" "}
-                    <b style={{ color: tape.tape.lean === "bullish" ? "#12b76a" : tape.tape.lean === "bearish" ? "#f04438" : "#667085" }}>
-                      {tape.tape.lean}
+                <div style={{ display: "flex", gap: 8, margin: "10px 0", flexWrap: "wrap" }}>
+                  <div style={{ flex: "1 1 160px", background: "#f2f4f7", borderRadius: 8, padding: "8px 12px" }}>
+                    <div className="muted" style={{ fontSize: "0.72em", textTransform: "uppercase", letterSpacing: 0.4 }}>Limpio (la señal real)</div>
+                    <b style={{ fontSize: "1.05em", color: tape.read.cleanLean === "bullish" ? "#12b76a" : tape.read.cleanLean === "bearish" ? "#f04438" : "#667085" }}>
+                      {tape.read.cleanLean}
                     </b>{" "}
-                    <span className="muted">(${(tape.tape.bullishPremium / 1e6).toFixed(0)}M alcista / ${(tape.tape.bearishPremium / 1e6).toFixed(0)}M bajista)</span>
-                  </span>
+                    <span className="muted" style={{ fontSize: "0.8em" }}>${(tape.read.cleanBullish / 1e6).toFixed(1)}M▲ / ${(tape.read.cleanBearish / 1e6).toFixed(1)}M▼</span>
+                  </div>
+                  <div style={{ flex: "1 1 160px", background: "#fafafa", borderRadius: 8, padding: "8px 12px", opacity: 0.75 }}>
+                    <div className="muted" style={{ fontSize: "0.72em", textTransform: "uppercase", letterSpacing: 0.4 }}>Crudo (titular ingenuo)</div>
+                    <b style={{ fontSize: "1.05em", color: "#667085" }}>{tape.read.rawLean}</b>{" "}
+                    <span className="muted" style={{ fontSize: "0.8em" }}>${(tape.read.rawBullish / 1e6).toFixed(1)}M▲ / ${(tape.read.rawBearish / 1e6).toFixed(1)}M▼</span>
+                  </div>
+                  <div style={{ flex: "1 1 120px", background: "#fff7ed", borderRadius: 8, padding: "8px 12px" }}>
+                    <div className="muted" style={{ fontSize: "0.72em", textTransform: "uppercase", letterSpacing: 0.4 }}>Estructural (descontado)</div>
+                    <b style={{ fontSize: "1.05em", color: "#b54708" }}>${(tape.read.structuralPremium / 1e6).toFixed(1)}M</b>
+                  </div>
                 </div>
-                <div style={{ maxHeight: 340, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
-                  {tape.tape.prints.map((p, i) => {
-                    const buy = p.side === "Buy" || p.side === "Aggr.Buy";
-                    const sideColor = buy ? "#12b76a" : p.side === "Mid" ? "#667085" : "#f04438";
+                {tape.read.rawLean !== tape.read.cleanLean || tape.read.structuralPremium > tape.read.cleanBullish + tape.read.cleanBearish ? (
+                  <div style={{ fontSize: "0.8em", color: "#b54708", marginBottom: 8 }}>
+                    ⚠ El titular crudo está inflado por estructura — fíjate en el sesgo LIMPIO.
+                  </div>
+                ) : null}
+                <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
+                  {tape.read.structures.map((s, i) => {
+                    const biasColor = s.bias === "bullish" ? "#12b76a" : s.bias === "bearish" ? "#f04438" : "#667085";
+                    const leg0 = s.legs[0];
                     return (
                       <div
                         key={i}
                         style={{
-                          borderLeft: `4px solid ${p.bullish ? "#12b76a" : "#f04438"}`,
-                          background: "#f9fafb",
+                          borderLeft: `4px solid ${s.structural ? "#f79009" : biasColor}`,
+                          background: s.structural ? "#fffbf5" : "#f9fafb",
                           borderRadius: 6,
                           padding: "6px 10px",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          gap: 8,
-                          fontSize: "0.88em",
+                          fontSize: "0.86em",
                         }}
                       >
-                        <span>
-                          <b>{p.strike}{p.type === "put" ? "P" : "C"}</b>{" "}
-                          <span style={{ color: sideColor, fontWeight: 700 }}>{p.side}</span>{" "}
-                          <span className="muted">· {p.cond}</span>
-                        </span>
-                        <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                          <b>${p.premium >= 1e6 ? `${(p.premium / 1e6).toFixed(1)}M` : `${(p.premium / 1e3).toFixed(0)}K`}</b>
-                          <span className="muted">×{p.size}</span>
-                          <span className="muted" style={{ fontSize: "0.85em" }}>{etTime(p.timestamp)}</span>
-                        </span>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                          <span>
+                            <span style={{ fontSize: "0.82em" }}>{s.structural ? "🔗" : "✅"}</span>{" "}
+                            <b>{leg0 ? `${leg0.strike}${leg0.type === "put" ? "P" : "C"}` : ""}</b>{" "}
+                            <span style={{ color: biasColor, fontWeight: 700 }}>{s.label}</span>{" "}
+                            <span className="muted">· {s.cond}</span>
+                          </span>
+                          <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                            <b>${s.headlinePremium >= 1e6 ? `${(s.headlinePremium / 1e6).toFixed(1)}M` : `${(s.headlinePremium / 1e3).toFixed(0)}K`}</b>
+                            <span className="muted">×{s.size}</span>
+                            <span className="muted" style={{ fontSize: "0.85em" }}>{etTime(s.timestamp)}</span>
+                          </span>
+                        </div>
+                        <div className="muted" style={{ fontSize: "0.82em", marginTop: 3 }}>{s.note}</div>
                       </div>
                     );
                   })}

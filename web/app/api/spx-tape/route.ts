@@ -1,19 +1,21 @@
-// GET /api/spx-tape — tape institucional del SPX (prints grandes que alimentan la foto de
-// gamma), como la de la vista GEX de MarketSnack. ?min=100000 ajusta el umbral.
+// GET /api/spx-tape — lector de tape con ESTRUCTURA + captura continua. Clasifica sintéticos/
+// verticales/straddles y separa el flujo LIMPIO del ESTRUCTURAL para no leer mal un deep-ITM.
+// ?min=<premium mínimo del titular> (default 250000)
 // Ver docs/superpowers/specs/2026-07-30-spx-0dte-design.md
 
-import { spxInstitutionalTape } from "@/lib/spxServer";
+import { spxTapeRead } from "@/lib/spxServer";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const minPremium = Number(searchParams.get("min")) || undefined;
+export async function GET(req: Request) {
   try {
-    return Response.json(await spxInstitutionalTape({ minPremium }));
+    const url = new URL(req.url);
+    const min = Number(url.searchParams.get("min"));
+    const minPremium = Number.isFinite(min) && min > 0 ? min : undefined;
+    return Response.json(await spxTapeRead({ minPremium }));
   } catch (e) {
-    const message = e instanceof Error ? e.message : "No se pudo leer la tape institucional.";
+    const message = e instanceof Error ? e.message : "No se pudo leer el tape.";
     return Response.json({ error: message }, { status: 502 });
   }
 }

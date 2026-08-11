@@ -47,6 +47,8 @@ import {
 import { loadCloseFlow, saveCloseFlow, priorSession } from "./spxCloseFlowStore";
 import { monitorPosition, type PositionStatus, type PositionMarket } from "./positionMonitor";
 import { institutionalTape, type InstitutionalTape } from "./institutionalTape";
+import { readTape, type TapeRead } from "./tapeStructure";
+import { mergeTapeSession } from "./spxTapeStore";
 import { closingMomentumSignal, aggressiveFlow } from "./closingMomentum";
 
 export interface SpxDteSetup {
@@ -399,6 +401,45 @@ export async function spxInstitutionalTape(
   return {
     tape: institutionalTape(flowTrades, { minPremium }),
     minPremium,
+    flowError,
+    generatedAt: now.toISOString(),
+  };
+}
+
+export interface SpxTapeReadResult {
+  read: TapeRead; // estructuras clasificadas + flujo limpio vs crudo
+  minPremium: number;
+  captured: number; // prints acumulados de la sesión (no solo la ventana reciente)
+  addedThisPoll: number; // prints nuevos que entraron en este poll
+  flowError: string | null;
+  generatedAt: string;
+}
+
+/**
+ * Lector de tape con ESTRUCTURA + captura continua. Cada llamada mergea la ventana reciente al
+ * acumulado del día (spxTapeStore) y clasifica TODO el acumulado: agrupa combos, detecta
+ * sintéticos/verticales/straddles, y separa el flujo LIMPIO (single-leg direccional) del
+ * ESTRUCTURAL (sintéticos/deep-ITM/vol). Pensado para pollear cada 60-90s.
+ */
+export async function spxTapeRead(
+  opts: { minPremium?: number } = {},
+  now: Date = new Date(),
+): Promise<SpxTapeReadResult> {
+  const minPremium = opts.minPremium ?? 250_000;
+  const date = marketDateStr(now);
+  let flowError: string | null = null;
+  let recent: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  try {
+    recent = (await fetchSpxFlow({ period: "1d", maxPages: 15 })).trades;
+  } catch (e) {
+    flowError = e instanceof Error ? e.message : "No se pudo leer el flujo de MarketSnack.";
+  }
+  const { prints, added, total } = await mergeTapeSession(date, recent);
+  return {
+    read: readTape(prints, { minPremium }),
+    minPremium,
+    captured: total,
+    addedThisPoll: added,
     flowError,
     generatedAt: now.toISOString(),
   };
