@@ -154,6 +154,51 @@ describe("classifyStructure vía readTape — otras estructuras", () => {
     expect(s.bias).toBe("bearish"); // long put arriba, short put abajo = bear put spread
   });
 
+  it("VENTA agresiva de put OTM = venta de prima (soporte), no ensucia direccional", () => {
+    const r = readTape(
+      [t({ strike: 7700, type: "put", rawSide: "BELOW_BID", premium: 1_000_000, price: 12, delta: -0.18, size: 500 })],
+      { minPremium: 250_000 },
+    );
+    const s = r.structures[0];
+    expect(s.role).toBe("premium_sell");
+    expect(s.premiumSell).toEqual({ side: "put", aggressive: true, strike: 7700, wall: "soporte" });
+    expect(r.premiumSellPut).toBe(1_000_000);
+    expect(r.premiumSells).toHaveLength(1);
+    expect(r.cleanBullish).toBe(0); // la venta de put NO se cuenta como "compra alcista"
+  });
+
+  it("VENTA de call OTM = venta de prima (resistencia)", () => {
+    const r = readTape(
+      [t({ strike: 7850, type: "call", rawSide: "AT_BID", premium: 600_000, price: 5, delta: 0.15 })],
+      { minPremium: 250_000 },
+    );
+    expect(r.structures[0].premiumSell).toEqual({ side: "call", aggressive: false, strike: 7850, wall: "resistencia" });
+    expect(r.premiumSellCall).toBe(600_000);
+  });
+
+  it("put comprado LEJOS (12% OTM) = hedge de cola, va a hedgePremium NO a cleanBearish", () => {
+    const r = readTape(
+      [t({ strike: 6800, type: "put", rawSide: "ABOVE_ASK", premium: 580_000, price: 5, delta: -0.1, size: 80 })],
+      { minPremium: 250_000 },
+    );
+    const s = r.structures[0];
+    expect(s.role).toBe("hedge");
+    expect(s.otmPct).toBeGreaterThan(0.1);
+    expect(r.hedgePremium).toBe(580_000);
+    expect(r.cleanBearish).toBe(0); // el hedge lejano no cuenta como convicción bajista
+  });
+
+  it("put comprado CERCA del dinero = direccional (sí cuenta como bearish limpio)", () => {
+    const r = readTape(
+      [t({ strike: 7700, type: "put", rawSide: "ABOVE_ASK", premium: 1_500_000, price: 20, delta: -0.4, size: 750 })],
+      { minPremium: 250_000 },
+    );
+    const s = r.structures[0];
+    expect(s.role).toBe("directional");
+    expect(r.cleanBearish).toBe(1_500_000);
+    expect(r.hedgePremium).toBe(0);
+  });
+
   it("vertical DEEP-ITM (box/financiamiento) = estructural, no cuenta como limpio", () => {
     const r = readTape(
       [

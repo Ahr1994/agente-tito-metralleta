@@ -51,9 +51,15 @@ export interface TapeStructure {
   directionalNotional: number; // $ direccional REAL = |netDelta|×100×spot (no el premium)
   bias: "bullish" | "bearish" | "neutral";
   structural: boolean; // true = descontar el titular (sintético/combo/deep-ITM/vol)
+  otmPct: number; // distancia del strike primario al spot (+ = OTM, − = ITM)
+  role: "directional" | "premium_sell" | "hedge" | "vol" | "structural";
+  premiumSell: { side: "put" | "call"; aggressive: boolean; strike: number; wall: "soporte" | "resistencia" } | null;
   label: string; // etiqueta corta ES
   note: string; // explicación ES
 }
+
+// Umbrales de moneyness: cerca del dinero = direccional; lejos = hedge/lotto.
+const HEDGE_OTM = 0.07; // ≥7% OTM y comprado = protección de cola, no convicción direccional
 
 function buildLeg(t: SpxFlowTrade): StructLeg {
   const side = tapeSide(t.rawSide);
@@ -185,6 +191,36 @@ export function classifyStructure(legs: StructLeg[]): TapeStructure {
   if (anyIntrinsic) structural = true;
   if (kind === "straddle" || kind === "strangle") bias = "neutral"; // apuesta de VOL
 
+  // moneyness del strike primario (la pata de mayor premium) y rol de la estructura
+  const primary = [...legs].sort((a, b) => b.premium - a.premium)[0];
+  const otmPct =
+    spotVal && spotVal > 0 && primary
+      ? primary.type === "put"
+        ? (spotVal - primary.strike) / spotVal
+        : (primary.strike - spotVal) / spotVal
+      : 0;
+
+  let role: TapeStructure["role"];
+  let premiumSell: TapeStructure["premiumSell"] = null;
+  if (structural) {
+    role = "structural";
+  } else if (kind === "straddle" || kind === "strangle") {
+    role = "vol";
+  } else if (primary && !primary.long && otmPct > 0) {
+    // la pata dominante es una VENTA de opción OTM = venta de prima (muro donde escriben)
+    role = "premium_sell";
+    premiumSell = {
+      side: primary.type,
+      aggressive: primary.side === "Aggr.Sell",
+      strike: primary.strike,
+      wall: primary.type === "put" ? "soporte" : "resistencia",
+    };
+  } else if (primary && primary.long && otmPct >= HEDGE_OTM) {
+    role = "hedge"; // comprado y lejos = protección de cola / lotto, no convicción
+  } else {
+    role = "directional";
+  }
+
   return {
     kind,
     legs,
@@ -198,6 +234,9 @@ export function classifyStructure(legs: StructLeg[]): TapeStructure {
     directionalNotional,
     bias,
     structural,
+    otmPct,
+    role,
+    premiumSell,
     label,
     note,
   };
@@ -208,11 +247,15 @@ export interface TapeRead {
   rawBullish: number; // titular ingenuo (premium por lado×tipo) — para comparar
   rawBearish: number;
   rawLean: "bullish" | "bearish" | "neutral";
-  cleanBullish: number; // solo prints direccionales LIMPIOS (single-leg, no intrínseco)
+  cleanBullish: number; // solo prints direccionales LIMPIOS cerca del dinero (no hedge, no estructura)
   cleanBearish: number;
   cleanLean: "bullish" | "bearish" | "neutral";
   structuralPremium: number; // premium atado a sintéticos/combos/deep-ITM (descontado)
-  topClean: TapeStructure[]; // los mayores prints limpios (la señal real)
+  hedgePremium: number; // puts/calls comprados LEJOS (≥7% OTM) = protección de cola, no direccional
+  premiumSells: TapeStructure[]; // DÓNDE venden prima con agresividad (muros: soporte/resistencia)
+  premiumSellPut: number; // prima vendida en puts (soporte alcista)
+  premiumSellCall: number; // prima vendida en calls (resistencia bajista)
+  topClean: TapeStructure[]; // los mayores prints limpios direccionales (la señal real)
 }
 
 /**
@@ -245,6 +288,9 @@ export function readTape(
   let cleanBull = 0;
   let cleanBear = 0;
   let structuralPremium = 0;
+  let hedgePremium = 0;
+  let premiumSellPut = 0;
+  let premiumSellCall = 0;
   let rawBull = 0;
   let rawBear = 0;
   for (const g of groups.values()) {
@@ -260,8 +306,15 @@ export function readTape(
       if ((isBuy && l.type === "call") || (isSell && l.type === "put")) rawBull += l.premium;
       else if ((isBuy && l.type === "put") || (isSell && l.type === "call")) rawBear += l.premium;
     }
-    if (s.structural || s.kind === "straddle" || s.kind === "strangle") {
+    // bucketing por ROL (moneyness-aware): direccional cerca del dinero vs hedge lejano vs
+    // venta de prima (muro) vs estructural/vol
+    if (s.role === "structural" || s.role === "vol") {
       structuralPremium += groupPremium;
+    } else if (s.role === "hedge") {
+      hedgePremium += groupPremium;
+    } else if (s.role === "premium_sell") {
+      if (s.premiumSell?.side === "put") premiumSellPut += groupPremium;
+      else premiumSellCall += groupPremium;
     } else if (s.bias === "bullish") {
       cleanBull += groupPremium;
     } else if (s.bias === "bearish") {
@@ -284,8 +337,14 @@ export function readTape(
   };
 
   const topClean = structures
-    .filter((s) => !s.structural && s.bias !== "neutral")
+    .filter((s) => s.role === "directional" && s.bias !== "neutral")
     .slice(0, 8);
+
+  // muros accionables: venta de prima a ≤15% del dinero (más lejos = cosecha, no muro defendible)
+  const premiumSells = structures
+    .filter((s) => s.role === "premium_sell" && s.otmPct <= 0.15)
+    .sort((a, b) => b.headlinePremium - a.headlinePremium)
+    .slice(0, 10);
 
   return {
     structures: structures.slice(0, limit),
@@ -296,6 +355,10 @@ export function readTape(
     cleanBearish: cleanBear,
     cleanLean: leanOf(cleanBull, cleanBear),
     structuralPremium,
+    hedgePremium,
+    premiumSells,
+    premiumSellPut,
+    premiumSellCall,
     topClean,
   };
 }

@@ -829,6 +829,46 @@ export default function SpxPage() {
                     ⚠ El titular crudo está inflado por estructura — fíjate en el sesgo LIMPIO.
                   </div>
                 ) : null}
+                {tape.read.hedgePremium > 0 ? (
+                  <div style={{ fontSize: "0.8em", color: "#667085", marginBottom: 8 }}>
+                    🛡️ ${(tape.read.hedgePremium / 1e6).toFixed(1)}M en hedges de cola (≥7% OTM) — excluidos del sesgo direccional.
+                  </div>
+                ) : null}
+                {tape.read.premiumSells.length > 0 ? (
+                  <div style={{ background: "#f0f9f4", border: "1px solid #d1fadf", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
+                      <b style={{ fontSize: "0.9em" }}>💰 Dónde venden prima (muros)</b>
+                      <span className="muted" style={{ fontSize: "0.78em" }}>
+                        puts ${(tape.read.premiumSellPut / 1e6).toFixed(1)}M soporte · calls ${(tape.read.premiumSellCall / 1e6).toFixed(1)}M resistencia
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
+                      {tape.read.premiumSells.slice(0, 6).map((s, i) => {
+                        const ps = s.premiumSell!;
+                        const isPut = ps.side === "put";
+                        return (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: "0.85em" }}>
+                            <span>
+                              {ps.aggressive ? <b style={{ color: "#f79009" }}>⚡ </b> : null}
+                              <b>{ps.strike}{isPut ? "P" : "C"}</b>{" "}
+                              <span style={{ color: isPut ? "#12b76a" : "#f04438", fontWeight: 700 }}>
+                                {ps.wall}
+                              </span>{" "}
+                              <span className="muted">· vende {isPut ? "puts" : "calls"}{ps.aggressive ? " agresivo" : ""}</span>
+                            </span>
+                            <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <b>${s.headlinePremium >= 1e6 ? `${(s.headlinePremium / 1e6).toFixed(1)}M` : `${(s.headlinePremium / 1e3).toFixed(0)}K`}</b>
+                              <span className="muted" style={{ fontSize: "0.85em" }}>{etTime(s.timestamp)}</span>
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="muted" style={{ fontSize: "0.76em", marginTop: 6 }}>
+                      Donde el smart money ESCRIBE prima = nivel que defienden. Puts = piso alcista, calls = techo. ⚡ = agresivo (al/​bajo el bid).
+                    </div>
+                  </div>
+                ) : null}
                 <div style={{ maxHeight: 360, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
                   {tape.read.structures.map((s, i) => {
                     const biasColor = s.bias === "bullish" ? "#12b76a" : s.bias === "bearish" ? "#f04438" : "#667085";
