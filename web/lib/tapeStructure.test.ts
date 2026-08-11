@@ -154,26 +154,50 @@ describe("classifyStructure vía readTape — otras estructuras", () => {
     expect(s.bias).toBe("bearish"); // long put arriba, short put abajo = bear put spread
   });
 
-  it("VENTA agresiva de put OTM = venta de prima (soporte), no ensucia direccional", () => {
+  it("VENTA agresiva de put OTM = muro de soporte (0DTE), no ensucia direccional", () => {
     const r = readTape(
       [t({ strike: 7700, type: "put", rawSide: "BELOW_BID", premium: 1_000_000, price: 12, delta: -0.18, size: 500 })],
       { minPremium: 250_000 },
     );
-    const s = r.structures[0];
-    expect(s.role).toBe("premium_sell");
-    expect(s.premiumSell).toEqual({ side: "put", aggressive: true, strike: 7700, wall: "soporte" });
+    expect(r.premiumWalls).toHaveLength(1);
+    const w = r.premiumWalls[0];
+    expect(w).toMatchObject({ strike: 7700, type: "put", wall: "soporte", netSold: 1_000_000, aggrSold: 1_000_000 });
     expect(r.premiumSellPut).toBe(1_000_000);
-    expect(r.premiumSells).toHaveLength(1);
     expect(r.cleanBullish).toBe(0); // la venta de put NO se cuenta como "compra alcista"
   });
 
-  it("VENTA de call OTM = venta de prima (resistencia)", () => {
+  it("NETEA ventas vs compras del mismo strike (flujo de dos lados = muro chico)", () => {
+    const r = readTape(
+      [
+        t({ strike: 7700, type: "put", rawSide: "AT_BID", premium: 1_000_000, price: 12, delta: -0.18, size: 500 }),
+        t({ strike: 7700, type: "put", rawSide: "AT_ASK", premium: 800_000, price: 12, delta: -0.18, size: 400 }),
+      ],
+      { minPremium: 100_000 },
+    );
+    expect(r.premiumWalls[0].netSold).toBe(200_000); // 1M vendido − 0.8M comprado
+    expect(r.premiumWalls[0].size).toBe(100); // 500 − 400
+  });
+
+  it("VENTA de call OTM = muro de resistencia", () => {
     const r = readTape(
       [t({ strike: 7850, type: "call", rawSide: "AT_BID", premium: 600_000, price: 5, delta: 0.15 })],
       { minPremium: 250_000 },
     );
-    expect(r.structures[0].premiumSell).toEqual({ side: "call", aggressive: false, strike: 7850, wall: "resistencia" });
+    expect(r.premiumWalls[0]).toMatchObject({ strike: 7850, type: "call", wall: "resistencia" });
     expect(r.premiumSellCall).toBe(600_000);
+  });
+
+  it("filtra por DTE: un put-write a 38 días NO es muro para 0DTE", () => {
+    const near = readTape(
+      [t({ strike: 7700, type: "put", rawSide: "AT_BID", premium: 1_000_000, expiration: "2026-08-10", size: 500 })],
+      { minPremium: 250_000, maxDte: 0, now: new Date("2026-08-10T16:00:00Z") },
+    );
+    expect(near.premiumWalls).toHaveLength(1);
+    const far = readTape(
+      [t({ strike: 7700, type: "put", rawSide: "AT_BID", premium: 1_000_000, expiration: "2026-09-18", size: 500 })],
+      { minPremium: 250_000, maxDte: 0, now: new Date("2026-08-10T16:00:00Z") },
+    );
+    expect(far.premiumWalls).toHaveLength(0); // 38 días, fuera del plazo 0DTE
   });
 
   it("put comprado LEJOS (12% OTM) = hedge de cola, va a hedgePremium NO a cleanBearish", () => {

@@ -422,10 +422,13 @@ export interface SpxTapeReadResult {
  * ESTRUCTURAL (sintéticos/deep-ITM/vol). Pensado para pollear cada 60-90s.
  */
 export async function spxTapeRead(
-  opts: { minPremium?: number } = {},
+  opts: { minPremium?: number; maxDte?: number } = {},
   now: Date = new Date(),
 ): Promise<SpxTapeReadResult> {
   const minPremium = opts.minPremium ?? 250_000;
+  // Estrategia 0DTE/1DTE: por defecto enfocamos el vencimiento de hoy y mañana. Un put-write a
+  // 38 días NO es un muro relevante para vender prima diaria (se sale de contexto).
+  const maxDte = opts.maxDte ?? 1;
   const date = marketDateStr(now);
   let flowError: string | null = null;
   let recent: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
@@ -436,7 +439,7 @@ export async function spxTapeRead(
   }
   const { prints, added, total } = await mergeTapeSession(date, recent);
   return {
-    read: readTape(prints, { minPremium }),
+    read: readTape(prints, { minPremium, maxDte, now }),
     minPremium,
     captured: total,
     addedThisPoll: added,

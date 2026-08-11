@@ -11,6 +11,7 @@
 
 import type { SpxFlowTrade } from "./spx";
 import { tapeSide, tapeCond, type TapeSide } from "./institutionalTape";
+import { daysToExpiration } from "./occ";
 
 export interface StructLeg {
   strike: number;
@@ -252,10 +253,23 @@ export interface TapeRead {
   cleanLean: "bullish" | "bearish" | "neutral";
   structuralPremium: number; // premium atado a sintéticos/combos/deep-ITM (descontado)
   hedgePremium: number; // puts/calls comprados LEJOS (≥7% OTM) = protección de cola, no direccional
-  premiumSells: TapeStructure[]; // DÓNDE venden prima con agresividad (muros: soporte/resistencia)
-  premiumSellPut: number; // prima vendida en puts (soporte alcista)
-  premiumSellCall: number; // prima vendida en calls (resistencia bajista)
+  premiumWalls: PremiumWall[]; // DÓNDE venden prima NETO por strike (muros: soporte/resistencia)
+  premiumSellPut: number; // prima NETA vendida en puts (soporte alcista)
+  premiumSellCall: number; // prima NETA vendida en calls (resistencia bajista)
+  dteFilter: number | null; // si se filtró por DTE (null = todas las expiraciones)
   topClean: TapeStructure[]; // los mayores prints limpios direccionales (la señal real)
+}
+
+export interface PremiumWall {
+  strike: number;
+  type: "put" | "call";
+  expiration: string;
+  dte: number;
+  wall: "soporte" | "resistencia";
+  netSold: number; // prima NETA vendida (ventas al bid − compras al ask) en ese strike
+  aggrSold: number; // cuánto de eso fue AGRESIVO (below-bid / Aggr.Sell)
+  size: number; // contratos netos vendidos
+  otmPct: number; // distancia del strike al spot
 }
 
 /**
@@ -264,10 +278,16 @@ export interface TapeRead {
  */
 export function readTape(
   trades: SpxFlowTrade[],
-  opts: { minPremium?: number; limit?: number } = {},
+  opts: { minPremium?: number; limit?: number; maxDte?: number; now?: Date } = {},
 ): TapeRead {
   const minPremium = opts.minPremium ?? 250_000;
   const limit = opts.limit ?? 40;
+  const maxDte = opts.maxDte ?? null;
+  const now = opts.now ?? new Date();
+  // El tape lee TODAS las expiraciones (su fuerza: whales/sintéticos institucionales, que viven
+  // en vencimientos lejanos). El filtro de DTE aplica SOLO a los muros de venta de prima, porque
+  // para la estrategia 0DTE un put-write a 38 días no es un muro relevante.
+  const dteOk = (t: SpxFlowTrade) => maxDte == null || (daysToExpiration(t.expiration, now) as number) <= maxDte;
   // Piso BAJO para agrupar: la pata OTM de un sintético es chica (el 7800C eran $21k) y si la
   // filtramos antes de agrupar perdemos el combo. Agrupamos con el piso, luego exigimos que el
   // TITULAR del grupo (su pata mayor) llegue a minPremium para considerarlo material.
@@ -289,8 +309,6 @@ export function readTape(
   let cleanBear = 0;
   let structuralPremium = 0;
   let hedgePremium = 0;
-  let premiumSellPut = 0;
-  let premiumSellCall = 0;
   let rawBull = 0;
   let rawBear = 0;
   for (const g of groups.values()) {
@@ -306,21 +324,56 @@ export function readTape(
       if ((isBuy && l.type === "call") || (isSell && l.type === "put")) rawBull += l.premium;
       else if ((isBuy && l.type === "put") || (isSell && l.type === "call")) rawBear += l.premium;
     }
-    // bucketing por ROL (moneyness-aware): direccional cerca del dinero vs hedge lejano vs
-    // venta de prima (muro) vs estructural/vol
-    if (s.role === "structural" || s.role === "vol") {
-      structuralPremium += groupPremium;
+    // bucketing por ROL (moneyness-aware): direccional cerca del dinero vs hedge lejano vs estructural/vol
+    if (s.role === "structural" || s.role === "vol" || s.role === "premium_sell") {
+      if (s.role !== "premium_sell") structuralPremium += groupPremium; // las ventas van a los muros netos, abajo
     } else if (s.role === "hedge") {
       hedgePremium += groupPremium;
-    } else if (s.role === "premium_sell") {
-      if (s.premiumSell?.side === "put") premiumSellPut += groupPremium;
-      else premiumSellCall += groupPremium;
     } else if (s.bias === "bullish") {
       cleanBull += groupPremium;
     } else if (s.bias === "bearish") {
       cleanBear += groupPremium;
     }
   }
+
+  // MUROS de venta de prima: neto por strike (ventas al bid − compras al ask) sobre las opciones
+  // OTM del plazo filtrado. Netear evita sobreestimar cuando el flujo es de dos lados (MM/spread).
+  const wallMap = new Map<string, PremiumWall>();
+  for (const t of forGroup) {
+    if (!dteOk(t)) continue; // los muros SÍ se filtran por plazo (0DTE), el resto del tape no
+    const spot = t.assetPrice ?? 0;
+    if (!(spot > 0)) continue;
+    const otm = t.type === "put" ? t.strike < spot : t.strike > spot;
+    if (!otm) continue;
+    const side = tapeSide(t.rawSide);
+    const isSell = side === "Sell" || side === "Aggr.Sell";
+    const isBuy = side === "Buy" || side === "Aggr.Buy";
+    if (!isSell && !isBuy) continue;
+    const key = `${t.strike}|${t.type}|${t.expiration}`;
+    let w = wallMap.get(key);
+    if (!w) {
+      w = {
+        strike: t.strike, type: t.type, expiration: t.expiration,
+        dte: daysToExpiration(t.expiration, now) as number,
+        wall: t.type === "put" ? "soporte" : "resistencia",
+        netSold: 0, aggrSold: 0, size: 0,
+        otmPct: t.type === "put" ? (spot - t.strike) / spot : (t.strike - spot) / spot,
+      };
+      wallMap.set(key, w);
+    }
+    if (isSell) {
+      w.netSold += t.premium; w.size += t.size;
+      if (side === "Aggr.Sell") w.aggrSold += t.premium;
+    } else {
+      w.netSold -= t.premium; w.size -= t.size; // compras netean contra las ventas
+    }
+  }
+  const premiumWalls = [...wallMap.values()]
+    .filter((w) => w.netSold >= minPremium && w.otmPct <= 0.15)
+    .sort((a, b) => b.netSold - a.netSold)
+    .slice(0, 10);
+  const premiumSellPut = premiumWalls.filter((w) => w.type === "put").reduce((s, w) => s + w.netSold, 0);
+  const premiumSellCall = premiumWalls.filter((w) => w.type === "call").reduce((s, w) => s + w.netSold, 0);
 
   structures.sort((a, b) => {
     // limpios grandes primero, luego por nocional direccional, luego por hora
@@ -340,12 +393,6 @@ export function readTape(
     .filter((s) => s.role === "directional" && s.bias !== "neutral")
     .slice(0, 8);
 
-  // muros accionables: venta de prima a ≤15% del dinero (más lejos = cosecha, no muro defendible)
-  const premiumSells = structures
-    .filter((s) => s.role === "premium_sell" && s.otmPct <= 0.15)
-    .sort((a, b) => b.headlinePremium - a.headlinePremium)
-    .slice(0, 10);
-
   return {
     structures: structures.slice(0, limit),
     rawBullish: rawBull,
@@ -356,9 +403,10 @@ export function readTape(
     cleanLean: leanOf(cleanBull, cleanBear),
     structuralPremium,
     hedgePremium,
-    premiumSells,
+    premiumWalls,
     premiumSellPut,
     premiumSellCall,
+    dteFilter: maxDte,
     topClean,
   };
 }

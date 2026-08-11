@@ -834,38 +834,36 @@ export default function SpxPage() {
                     🛡️ ${(tape.read.hedgePremium / 1e6).toFixed(1)}M en hedges de cola (≥7% OTM) — excluidos del sesgo direccional.
                   </div>
                 ) : null}
-                {tape.read.premiumSells.length > 0 ? (
+                {tape.read.premiumWalls.length > 0 ? (
                   <div style={{ background: "#f0f9f4", border: "1px solid #d1fadf", borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 4 }}>
-                      <b style={{ fontSize: "0.9em" }}>💰 Dónde venden prima (muros)</b>
+                      <b style={{ fontSize: "0.9em" }}>💰 Venta de prima {tape.read.dteFilter === 0 ? "0DTE" : tape.read.dteFilter != null ? `0-${tape.read.dteFilter}DTE` : ""} (muros netos)</b>
                       <span className="muted" style={{ fontSize: "0.78em" }}>
                         puts ${(tape.read.premiumSellPut / 1e6).toFixed(1)}M soporte · calls ${(tape.read.premiumSellCall / 1e6).toFixed(1)}M resistencia
                       </span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
-                      {tape.read.premiumSells.slice(0, 6).map((s, i) => {
-                        const ps = s.premiumSell!;
-                        const isPut = ps.side === "put";
+                      {tape.read.premiumWalls.slice(0, 6).map((w, i) => {
+                        const isPut = w.type === "put";
+                        const aggr = w.aggrSold > w.netSold * 0.4;
                         return (
                           <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: "0.85em" }}>
                             <span>
-                              {ps.aggressive ? <b style={{ color: "#f79009" }}>⚡ </b> : null}
-                              <b>{ps.strike}{isPut ? "P" : "C"}</b>{" "}
-                              <span style={{ color: isPut ? "#12b76a" : "#f04438", fontWeight: 700 }}>
-                                {ps.wall}
-                              </span>{" "}
-                              <span className="muted">· vende {isPut ? "puts" : "calls"}{ps.aggressive ? " agresivo" : ""}</span>
+                              {aggr ? <b style={{ color: "#f79009" }}>⚡ </b> : null}
+                              <b>{w.strike}{isPut ? "P" : "C"}</b>{" "}
+                              <span style={{ color: isPut ? "#12b76a" : "#f04438", fontWeight: 700 }}>{w.wall}</span>{" "}
+                              <span className="muted">· {w.dte}DTE · {(w.otmPct * 100).toFixed(1)}% {isPut ? "abajo" : "arriba"}</span>
                             </span>
                             <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                              <b>${s.headlinePremium >= 1e6 ? `${(s.headlinePremium / 1e6).toFixed(1)}M` : `${(s.headlinePremium / 1e3).toFixed(0)}K`}</b>
-                              <span className="muted" style={{ fontSize: "0.85em" }}>{etTime(s.timestamp)}</span>
+                              <b>${w.netSold >= 1e6 ? `${(w.netSold / 1e6).toFixed(1)}M` : `${(w.netSold / 1e3).toFixed(0)}K`}</b>
+                              <span className="muted" style={{ fontSize: "0.8em" }}>neto ×{w.size}</span>
                             </span>
                           </div>
                         );
                       })}
                     </div>
                     <div className="muted" style={{ fontSize: "0.76em", marginTop: 6 }}>
-                      Donde el smart money ESCRIBE prima = nivel que defienden. Puts = piso alcista, calls = techo. ⚡ = agresivo (al/​bajo el bid).
+                      Venta NETA (ventas − compras) por strike, solo tu plazo. Puts = piso, calls = techo. ⚡ = mayormente agresivo (bajo el bid).
                     </div>
                   </div>
                 ) : null}
