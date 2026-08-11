@@ -49,6 +49,7 @@ import { monitorPosition, type PositionStatus, type PositionMarket } from "./pos
 import { institutionalTape, type InstitutionalTape } from "./institutionalTape";
 import { readTape, type TapeRead } from "./tapeStructure";
 import { mergeTapeSession } from "./spxTapeStore";
+import { scanPremiumSells, type PremSellScan, type PremSellPrint } from "./premiumSellScan";
 import { closingMomentumSignal, aggressiveFlow } from "./closingMomentum";
 
 export interface SpxDteSetup {
@@ -443,6 +444,54 @@ export async function spxTapeRead(
     minPremium,
     captured: total,
     addedThisPoll: added,
+    flowError,
+    generatedAt: now.toISOString(),
+  };
+}
+
+export interface SpxPremiumSellResult {
+  scan: PremSellScan;
+  spot: number;
+  maxDte: number;
+  window: number; // prints leídos en la ventana reciente
+  flowError: string | null;
+  generatedAt: string;
+}
+
+/**
+ * DÓNDE venden prima 0DTE/1DTE: fetch FRESCO del flujo con piso BAJO (sin minPremium) para cazar la
+ * venta de prima 0DTE — que es alto volumen y prima CHICA por print, por debajo del piso del tape.
+ * Netea por strike sobre la ventana reciente. Puts vendidos = soporte, calls vendidos = resistencia;
+ * puts comprados = defensivo (sin piso). Es lectura de la VENTANA RECIENTE (el feed es rodante),
+ * pensado para pollear y ver qué se está escribiendo ahora.
+ */
+export async function spxPremiumSells(
+  opts: { maxDte?: number } = {},
+  now: Date = new Date(),
+): Promise<SpxPremiumSellResult> {
+  const maxDte = opts.maxDte ?? 1;
+  let flowError: string | null = null;
+  let recent: Awaited<ReturnType<typeof fetchSpxFlow>>["trades"] = [];
+  let spot = 0;
+  try {
+    const [flow, index] = await Promise.all([
+      fetchSpxFlow({ period: "1d", maxPages: 40 }), // piso bajo + muchas páginas para el flujo 0DTE
+      fetchSpxIndex().catch(() => null),
+    ]);
+    recent = flow.trades;
+    spot = index?.price ?? 0;
+  } catch (e) {
+    flowError = e instanceof Error ? e.message : "No se pudo leer el flujo de MarketSnack.";
+  }
+  if (!(spot > 0)) spot = recent.find((t) => (t.assetPrice ?? 0) > 0)?.assetPrice ?? 0;
+  const prints: PremSellPrint[] = recent.map((t) => ({
+    strike: t.strike, type: t.type, expiration: t.expiration, rawSide: t.rawSide, size: t.size, premium: t.premium,
+  }));
+  return {
+    scan: scanPremiumSells(prints, spot, { now, maxDte }),
+    spot,
+    maxDte,
+    window: recent.length,
     flowError,
     generatedAt: now.toISOString(),
   };

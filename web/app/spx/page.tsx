@@ -10,6 +10,7 @@ import type {
   SpxClosingFlowResult,
   SpxMonitorResult,
   SpxTapeReadResult,
+  SpxPremiumSellResult,
   SpxMag7Result,
   SpxMomentumResult,
 } from "@/lib/spxServer";
@@ -268,6 +269,7 @@ export default function SpxPage() {
   const [monitorAt, setMonitorAt] = useState<number | null>(null);
   const [tape, setTape] = useState<SpxTapeReadResult | null>(null);
   const [tapeAt, setTapeAt] = useState<number | null>(null);
+  const [premSells, setPremSells] = useState<SpxPremiumSellResult | null>(null);
   const [mag7, setMag7] = useState<SpxMag7Result | null>(null);
   const [momentum, setMomentum] = useState<SpxMomentumResult | null>(null);
   const [flash, setFlash] = useState<string | null>(null);
@@ -361,6 +363,16 @@ export default function SpxPage() {
     }
   }, []);
 
+  const loadPremSells = useCallback(async () => {
+    try {
+      const res = await fetch("/api/spx-premium-sells?maxDte=1", { cache: "no-store" });
+      const json = await res.json();
+      if (res.ok) setPremSells(json as SpxPremiumSellResult);
+    } catch {
+      /* ignora */
+    }
+  }, []);
+
   useEffect(() => {
     load();
     loadReview();
@@ -369,7 +381,8 @@ export default function SpxPage() {
     loadMonitor();
     loadTape();
     loadMag7();
-  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape, loadMag7]);
+    loadPremSells();
+  }, [load, loadReview, loadBacktest, loadClosing, loadMonitor, loadTape, loadMag7, loadPremSells]);
 
   // Tape institucional + Mag 7 en vivo: refresco cada 45-60s si la pestaña está visible.
   const loadMomentum = useCallback(async () => {
@@ -389,10 +402,11 @@ export default function SpxPage() {
         loadTape();
         loadMag7();
         loadMomentum();
+        loadPremSells();
       }
     }, 45_000);
     return () => clearInterval(id);
-  }, [loadTape, loadMag7, loadMomentum]);
+  }, [loadTape, loadMag7, loadMomentum, loadPremSells]);
 
   // Auto-refresh del monitor cada 60s mientras haya posiciones abiertas y la pestaña esté visible.
   useEffect(() => {
@@ -786,6 +800,72 @@ export default function SpxPage() {
           data && !busy && (
             <div className="muted">No hay cadena para {dte}DTE ahora mismo (mercado cerrado o sin vencimiento).</div>
           )
+        )}
+
+        {premSells && premSells.scan && (
+          <section className="scorecard" style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+              <b>💰 Dónde venden prima {premSells.maxDte === 0 ? "0DTE" : `0-${premSells.maxDte}DTE`}</b>
+              <span className="muted" style={{ fontSize: "0.78em" }}>
+                <span style={{ color: "#12b76a" }}>●</span> ventana reciente · {premSells.scan.considered} prints OTM · auto 45s
+              </span>
+            </div>
+            <div className="muted" style={{ fontSize: "0.82em", marginTop: 2 }}>
+              Venta NETA por strike (ventas − compras) del flujo corto. Puts vendidos = soporte, calls vendidos = resistencia.
+            </div>
+            {premSells.flowError ? (
+              <div style={{ color: "#b54708", fontSize: "0.85em", marginTop: 8 }}>⚠ Flujo no disponible ({premSells.flowError})</div>
+            ) : (
+              <>
+                {(() => {
+                  const s = premSells.scan;
+                  const leanColor = s.lean === "put_support" ? "#12b76a" : s.lean === "call_resistance" ? "#f04438" : s.lean === "defensive_puts" ? "#b54708" : "#667085";
+                  const leanLabel: Record<string, string> = {
+                    put_support: "🟢 Venden PUTS (soporte)",
+                    call_resistance: "🔴 Venden CALLS (resistencia)",
+                    defensive_puts: "🛡️ COMPRAN puts (defensivo)",
+                    mixed: "⚪ Mixto",
+                    quiet: "⚪ Quieto",
+                  };
+                  return (
+                    <>
+                      <div style={{ display: "flex", gap: 12, margin: "10px 0", flexWrap: "wrap", alignItems: "center" }}>
+                        <b style={{ color: leanColor }}>{leanLabel[s.lean] ?? s.lean}</b>
+                        <span className="muted" style={{ fontSize: "0.85em" }}>
+                          puts vend ${(s.putWriting / 1e3).toFixed(0)}K · calls vend ${(s.callWriting / 1e3).toFixed(0)}K · puts comp ${(s.putBuying / 1e3).toFixed(0)}K
+                        </span>
+                      </div>
+                      <div style={{ fontSize: "0.85em", marginBottom: 8 }}>{s.note}</div>
+                      {s.walls.length > 0 ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {s.walls.slice(0, 8).map((w, i) => {
+                            const isPut = w.type === "put";
+                            const aggr = w.aggr > w.sells * 0.4;
+                            return (
+                              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: "0.87em", borderLeft: `4px solid ${isPut ? "#12b76a" : "#f04438"}`, background: "#f9fafb", borderRadius: 6, padding: "5px 10px" }}>
+                                <span>
+                                  {aggr ? <b style={{ color: "#f79009" }}>⚡ </b> : null}
+                                  <b>{w.strike}{isPut ? "P" : "C"}</b>{" "}
+                                  <span style={{ color: isPut ? "#12b76a" : "#f04438", fontWeight: 700 }}>{w.wall}</span>{" "}
+                                  <span className="muted">· {w.dte}DTE · {(w.otmPct * 100).toFixed(1)}% {isPut ? "abajo" : "arriba"}</span>
+                                </span>
+                                <span><b>${(w.netSold / 1e3).toFixed(0)}K</b> <span className="muted">×{w.size}</span></span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <div className="muted" style={{ fontSize: "0.85em" }}>Sin concentración de venta en un strike ahora.</div>
+                      )}
+                      <div className="muted" style={{ fontSize: "0.76em", marginTop: 6 }}>
+                        ⚡ = mayormente agresivo (bajo el bid). Para niveles 0DTE, cruza con los muros de GEX.
+                      </div>
+                    </>
+                  );
+                })()}
+              </>
+            )}
+          </section>
         )}
 
         {tape && (
